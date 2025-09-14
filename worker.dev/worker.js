@@ -1,4 +1,4 @@
-const COOKIE = "<cookie>"; // Replace with your actual cookie
+const COOKIE = "<cookie>"; // 🔑 Put your valid cookie here
 
 const HEADERS = {
   "Accept": "application/json, text/plain, */*",
@@ -8,7 +8,7 @@ const HEADERS = {
   "DNT": "1",
   "Host": "www.terabox.app",
   "Upgrade-Insecure-Requests": "1",
-  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36 Edg/135.0.0.0",
+  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
   "sec-ch-ua": '"Microsoft Edge";v="135", "Not-A.Brand";v="8", "Chromium";v="135"',
   "Sec-Fetch-Dest": "document",
   "Sec-Fetch-Mode": "navigate",
@@ -30,6 +30,7 @@ const DL_HEADERS = {
   "Cookie": COOKIE,
 };
 
+// 📏 format file size
 function getSize(sizeBytes) {
   if (sizeBytes >= 1024 * 1024 * 1024) {
     return `${(sizeBytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
@@ -41,66 +42,40 @@ function getSize(sizeBytes) {
   return `${sizeBytes} bytes`;
 }
 
+// 🧩 helper to extract values
 function findBetween(str, start, end) {
-  const startIndex = str.indexOf(start) + start.length;
-  const endIndex = str.indexOf(end, startIndex);
-  if (startIndex === -1 || endIndex === -1) return "";
-  return str.slice(startIndex, endIndex);
+  const startIndex = str.indexOf(start);
+  if (startIndex === -1) return "";
+  const endIndex = str.indexOf(end, startIndex + start.length);
+  if (endIndex === -1) return "";
+  return str.slice(startIndex + start.length, endIndex);
 }
 
+// 🎯 main logic
 async function getFileInfo(link, request) {
   try {
     if (!link) return { error: "Link cannot be empty." };
 
+    // first fetch
     let response = await fetch(link, { headers: HEADERS });
-    if (!response.ok) return { error: `Failed to fetch initial link: ${response.status}` };
+    if (!response.ok) {
+      return { error: `Failed to fetch the link. Status code: ${response.status}` };
+    }
 
     const finalUrl = response.url;
     const url = new URL(finalUrl);
     const surl = url.searchParams.get("surl");
-    if (!surl) return { error: "Invalid link. Missing surl." };
+    if (!surl) return { error: "Invalid link. Please check the link." };
 
     response = await fetch(finalUrl, { headers: HEADERS });
     const text = await response.text();
 
-    const jsToken = findBetween(text, 'fn%28%22', '%22%29') || "";
-    const logid = findBetween(text, 'dp-logid=', '&') || "";
-    const bdstoken = findBetween(text, 'bdstoken":"', '"') || "";
+    const jsToken = findBetween(text, 'fn%28%22', '%22%29');
+    const logid = findBetween(text, 'dp-logid=', '&');
+    const bdstoken = findBetween(text, 'bdstoken":"', '"');
 
-    // New patch: try to get shareid + uk
-    let shareid = text.match(/"shareid":(\d+)/)?.[1];
-    let uk = text.match(/"uk":(\d+)/)?.[1];
-
-    if (!shareid || !uk) {
-      const stateMatch = text.match(/window.__INITIAL_STATE__\s*=\s*(\{.*?\});/s);
-      if (stateMatch) {
-        try {
-          const stateJson = JSON.parse(stateMatch[1]);
-          if (!shareid && stateJson?.shareInfo?.shareId) {
-            shareid = stateJson.shareInfo.shareId;
-          }
-          if (!uk && stateJson?.shareInfo?.uk) {
-            uk = stateJson.shareInfo.uk;
-          }
-        } catch (e) {
-          console.log("INITIAL_STATE parse fail:", e);
-        }
-      }
-    }
-
-    if (!shareid || !uk) {
-      const apiUrl = `https://www.terabox.com/share/init?surl=${surl}`;
-      const apiRes = await fetch(apiUrl, { headers: HEADERS });
-      const apiJson = await apiRes.json();
-      if (!shareid && apiJson?.shareid) shareid = apiJson.shareid;
-      if (!uk && apiJson?.uk) uk = apiJson.uk;
-    }
-
-    if (!jsToken || !logid || !bdstoken || !shareid || !uk) {
-      return {
-        error: "Failed to extract one or more required tokens.",
-        debug: { bdstoken, jsToken, logid, shareid, uk }
-      };
+    if (!jsToken || !logid || !bdstoken) {
+      return { error: "Failed to extract required tokens." };
     }
 
     const params = new URLSearchParams({
@@ -108,7 +83,7 @@ async function getFileInfo(link, request) {
       web: "1",
       channel: "dubox",
       clienttype: "0",
-      jsToken: jsToken,
+      jsToken,
       "dp-logid": logid,
       page: "1",
       num: "20",
@@ -117,32 +92,53 @@ async function getFileInfo(link, request) {
       site_referer: finalUrl,
       shorturl: surl,
       root: "1,",
-      shareid: shareid,
-      uk: uk,
-      bdstoken: bdstoken,
     });
 
     response = await fetch(`https://dm.terabox.app/share/list?${params}`, { headers: HEADERS });
     const data = await response.json();
 
     if (!data || !data.list || !data.list.length || data.errno) {
-      return { error: data.errmsg || "Failed to retrieve file list.", debug: data };
+      return { error: data.errmsg || "Failed to retrieve file list." };
     }
 
     const fileInfo = data.list[0];
+
+    // ⚡ unlock dlink with another API call
+    const dlParams = new URLSearchParams({
+      app_id: "250528",
+      web: "1",
+      channel: "dubox",
+      clienttype: "0",
+      shareid: data.shareid,
+      uk: data.uk,
+      primaryid: fileInfo.fs_id,
+    });
+
+    let realDlink = "";
+    try {
+      const dlRes = await fetch(`https://www.terabox.app/api/download?${dlParams}`, { headers: HEADERS });
+      const dlData = await dlRes.json();
+      realDlink = dlData.dlink || "";
+    } catch (e) {
+      realDlink = "";
+    }
+
     return {
       file_name: fileInfo.server_filename || "",
-      download_link: fileInfo.dlink || "",
+      download_link: realDlink,
       thumbnail: fileInfo.thumbs?.url3 || "",
       file_size: getSize(parseInt(fileInfo.size || 0)),
       size_bytes: parseInt(fileInfo.size || 0),
-      proxy_url: `https://${new URL(request.url).host}/proxy?url=${encodeURIComponent(fileInfo.dlink)}&file_name=${encodeURIComponent(fileInfo.server_filename || 'download')}`,
+      proxy_url: realDlink
+        ? `https://${new URL(request.url).host}/proxy?url=${encodeURIComponent(realDlink)}&file_name=${encodeURIComponent(fileInfo.server_filename || "download")}`
+        : "",
     };
   } catch (error) {
-    return { error: `Exception: ${error.message}` };
+    return { error: `An error occurred: ${error.message}` };
   }
 }
 
+// 🌀 proxy streaming
 async function proxyDownload(url, fileName, request) {
   try {
     const headers = new Headers(DL_HEADERS);
@@ -151,7 +147,7 @@ async function proxyDownload(url, fileName, request) {
 
     const response = await fetch(url, { headers, redirect: "follow" });
     if (!response.ok && response.status !== 206) {
-      return new Response(JSON.stringify({ error: `Proxy fetch fail: ${response.status}` }), {
+      return new Response(JSON.stringify({ error: `Failed to fetch download: ${response.status}` }), {
         status: 502,
         headers: { "Content-Type": "application/json" },
       });
@@ -173,20 +169,22 @@ async function proxyDownload(url, fileName, request) {
 
     return new Response(response.body, { status: response.status, headers: responseHeaders });
   } catch (error) {
-    return new Response(JSON.stringify({ error: `Proxy exception: ${error.message}` }), {
+    return new Response(JSON.stringify({ error: `Proxy error: ${error.message}` }), {
       status: 500,
       headers: { "Content-Type": "application/json" },
     });
   }
 }
 
+// 🌍 CORS
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type,Range",
-  "Access-Control-Expose-Headers": "Content-Length,Content-Range"
+  "Access-Control-Expose-Headers": "Content-Length,Content-Range",
 };
 
+// 🚀 Cloudflare Worker entry
 export default {
   async fetch(request) {
     const url = new URL(request.url);
@@ -195,30 +193,39 @@ export default {
       return new Response(null, { headers: CORS_HEADERS });
     }
 
-    if (request.method === "GET" && url.pathname === "/fileinfo") {
-      const link = url.searchParams.get("url");
-      if (!link) {
-        return new Response(JSON.stringify({ error: "No url param." }), {
+    if (request.method === "POST" && url.pathname === "/") {
+      try {
+        const { link } = await request.json();
+        if (!link) {
+          return new Response(JSON.stringify({ error: "No link provided in the request body." }), {
+            status: 400,
+            headers: { "Content-Type": "application/json", ...CORS_HEADERS },
+          });
+        }
+
+        const fileInfo = await getFileInfo(link, request);
+        return new Response(JSON.stringify(fileInfo), {
+          status: fileInfo.error ? 400 : 200,
+          headers: { "Content-Type": "application/json", ...CORS_HEADERS },
+        });
+      } catch (error) {
+        return new Response(JSON.stringify({ error: `Invalid request: ${error.message}` }), {
           status: 400,
-          headers: { "Content-Type": "application/json", ...CORS_HEADERS }
+          headers: { "Content-Type": "application/json", ...CORS_HEADERS },
         });
       }
-      const fileInfo = await getFileInfo(link, request);
-      return new Response(JSON.stringify(fileInfo), {
-        status: fileInfo.error ? 400 : 200,
-        headers: { "Content-Type": "application/json", ...CORS_HEADERS }
-      });
     }
 
     if (request.method === "GET" && url.pathname === "/proxy") {
       const downloadUrl = url.searchParams.get("url");
       const fileName = url.searchParams.get("file_name") || "download";
       if (!downloadUrl) {
-        return new Response(JSON.stringify({ error: "No proxy url." }), {
+        return new Response(JSON.stringify({ error: "No URL provided for proxy." }), {
           status: 400,
-          headers: { "Content-Type": "application/json", ...CORS_HEADERS }
+          headers: { "Content-Type": "application/json", ...CORS_HEADERS },
         });
       }
+
       const proxyResponse = await proxyDownload(downloadUrl, fileName, request);
       proxyResponse.headers.set("Access-Control-Allow-Origin", "*");
       proxyResponse.headers.set("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
@@ -227,9 +234,9 @@ export default {
       return proxyResponse;
     }
 
-    return new Response(JSON.stringify({ error: "Path not allowed." }), {
+    return new Response(JSON.stringify({ error: "Method or path not allowed." }), {
       status: 405,
-      headers: { "Content-Type": "application/json", ...CORS_HEADERS }
+      headers: { "Content-Type": "application/json", ...CORS_HEADERS },
     });
   },
 };
