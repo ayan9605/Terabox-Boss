@@ -1,4 +1,4 @@
-const COOKIE = "<cookie>"; // 🔑 Put your valid cookie here
+const COOKIE = "<cookie>"; // 🔑 Replace with your valid cookie
 
 const HEADERS = {
   "Accept": "application/json, text/plain, */*",
@@ -30,19 +30,13 @@ const DL_HEADERS = {
   "Cookie": COOKIE,
 };
 
-// 📏 format file size
 function getSize(sizeBytes) {
-  if (sizeBytes >= 1024 * 1024 * 1024) {
-    return `${(sizeBytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-  } else if (sizeBytes >= 1024 * 1024) {
-    return `${(sizeBytes / (1024 * 1024)).toFixed(2)} MB`;
-  } else if (sizeBytes >= 1024) {
-    return `${(sizeBytes / 1024).toFixed(2)} KB`;
-  }
+  if (sizeBytes >= 1024 * 1024 * 1024) return `${(sizeBytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  if (sizeBytes >= 1024 * 1024) return `${(sizeBytes / (1024 * 1024)).toFixed(2)} MB`;
+  if (sizeBytes >= 1024) return `${(sizeBytes / 1024).toFixed(2)} KB`;
   return `${sizeBytes} bytes`;
 }
 
-// 🧩 helper to extract values
 function findBetween(str, start, end) {
   const startIndex = str.indexOf(start);
   if (startIndex === -1) return "";
@@ -51,16 +45,12 @@ function findBetween(str, start, end) {
   return str.slice(startIndex + start.length, endIndex);
 }
 
-// 🎯 main logic
 async function getFileInfo(link, request) {
   try {
     if (!link) return { error: "Link cannot be empty." };
 
-    // first fetch
     let response = await fetch(link, { headers: HEADERS });
-    if (!response.ok) {
-      return { error: `Failed to fetch the link. Status code: ${response.status}` };
-    }
+    if (!response.ok) return { error: `Failed to fetch link. Status ${response.status}` };
 
     const finalUrl = response.url;
     const url = new URL(finalUrl);
@@ -73,10 +63,7 @@ async function getFileInfo(link, request) {
     const jsToken = findBetween(text, 'fn%28%22', '%22%29');
     const logid = findBetween(text, 'dp-logid=', '&');
     const bdstoken = findBetween(text, 'bdstoken":"', '"');
-
-    if (!jsToken || !logid || !bdstoken) {
-      return { error: "Failed to extract required tokens." };
-    }
+    if (!jsToken || !logid || !bdstoken) return { error: "Failed to extract required tokens." };
 
     const params = new URLSearchParams({
       app_id: "250528",
@@ -96,14 +83,11 @@ async function getFileInfo(link, request) {
 
     response = await fetch(`https://dm.terabox.app/share/list?${params}`, { headers: HEADERS });
     const data = await response.json();
-
     if (!data || !data.list || !data.list.length || data.errno) {
       return { error: data.errmsg || "Failed to retrieve file list." };
     }
 
     const fileInfo = data.list[0];
-
-    // ⚡ unlock dlink with another API call
     const dlParams = new URLSearchParams({
       app_id: "250528",
       web: "1",
@@ -138,7 +122,6 @@ async function getFileInfo(link, request) {
   }
 }
 
-// 🌀 proxy streaming
 async function proxyDownload(url, fileName, request) {
   try {
     const headers = new Headers(DL_HEADERS);
@@ -160,12 +143,8 @@ async function proxyDownload(url, fileName, request) {
       "Accept-Ranges": "bytes",
     });
 
-    if (response.headers.has("Content-Range")) {
-      responseHeaders.set("Content-Range", response.headers.get("Content-Range"));
-    }
-    if (response.headers.has("Content-Length")) {
-      responseHeaders.set("Content-Length", response.headers.get("Content-Length"));
-    }
+    if (response.headers.has("Content-Range")) responseHeaders.set("Content-Range", response.headers.get("Content-Range"));
+    if (response.headers.has("Content-Length")) responseHeaders.set("Content-Length", response.headers.get("Content-Length"));
 
     return new Response(response.body, { status: response.status, headers: responseHeaders });
   } catch (error) {
@@ -176,7 +155,6 @@ async function proxyDownload(url, fileName, request) {
   }
 }
 
-// 🌍 CORS
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
@@ -184,7 +162,6 @@ const CORS_HEADERS = {
   "Access-Control-Expose-Headers": "Content-Length,Content-Range",
 };
 
-// 🚀 Cloudflare Worker entry
 export default {
   async fetch(request) {
     const url = new URL(request.url);
@@ -193,27 +170,21 @@ export default {
       return new Response(null, { headers: CORS_HEADERS });
     }
 
-    if (request.method === "POST" && url.pathname === "/") {
-      try {
-        const { link } = await request.json();
-        if (!link) {
-          return new Response(JSON.stringify({ error: "No link provided in the request body." }), {
-            status: 400,
-            headers: { "Content-Type": "application/json", ...CORS_HEADERS },
-          });
-        }
-
-        const fileInfo = await getFileInfo(link, request);
-        return new Response(JSON.stringify(fileInfo), {
-          status: fileInfo.error ? 400 : 200,
-          headers: { "Content-Type": "application/json", ...CORS_HEADERS },
-        });
-      } catch (error) {
-        return new Response(JSON.stringify({ error: `Invalid request: ${error.message}` }), {
+    // 🆕 GET endpoint
+    if (request.method === "GET" && url.pathname === "/api") {
+      const link = url.searchParams.get("url");
+      if (!link) {
+        return new Response(JSON.stringify({ error: "No URL provided." }), {
           status: 400,
           headers: { "Content-Type": "application/json", ...CORS_HEADERS },
         });
       }
+
+      const fileInfo = await getFileInfo(link, request);
+      return new Response(JSON.stringify(fileInfo), {
+        status: fileInfo.error ? 400 : 200,
+        headers: { "Content-Type": "application/json", ...CORS_HEADERS },
+      });
     }
 
     if (request.method === "GET" && url.pathname === "/proxy") {
@@ -225,7 +196,6 @@ export default {
           headers: { "Content-Type": "application/json", ...CORS_HEADERS },
         });
       }
-
       const proxyResponse = await proxyDownload(downloadUrl, fileName, request);
       proxyResponse.headers.set("Access-Control-Allow-Origin", "*");
       proxyResponse.headers.set("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
