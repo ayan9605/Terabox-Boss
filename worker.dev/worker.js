@@ -1,4 +1,4 @@
-const COOKIE = "<cookie>"; // Replace with your actual cookie
+const COOKIE = "PANWEB=1; csrfToken=vMnCCwbxddILvcivhZ-sPi1h; browserid=bZ0O46wWYQJoJKinDqLmhQ2kKeqwSt0jaKE2ZgZdv0XIlFXbxvJtCJ_5Odw=; __bid_n=198ca2a99b04cfd1e44207; _ga=GA1.1.107481995.1755738449; _ga_RSNVN63CM3=GS2.1.s1755738448$o1$g1$t1755738527$j60$l0$h0; ndus=Y2cfn3MteHui7_sr4ZPYToUcMZ3KGqEh9dmOsZej; _gcl_au=1.1.773492122.1756712173; lang=pt; _ga_HSVH9T016H=GS2.1.s1757833668$o12$g0$t1757833674$j54$l0$h0; g_state={"i_p":1757878043422,"i_l":1}; ndut_fmt=8F4D9AFE1C0210D944DFCA4ACC6B8CF1126C5EF550FC2B6E1EEA2CB790BE38B3; _ga_06ZNKL8C2E=GS2.1.s1757870533$o21$g1$t1757871284$j43$l0$h0"; // Replace with your actual cookie
 
 const HEADERS = {
   "Accept": "application/json, text/plain, */*",
