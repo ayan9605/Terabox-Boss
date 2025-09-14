@@ -42,14 +42,12 @@ async function getFileInfo(link, request) {
     if (!link) return { error: "Link cannot be empty." };
 
     let response = await fetch(link, { headers: HEADERS });
-    if (!response.ok) {
-      return { error: `Failed to fetch the initial link. Status: ${response.status}` };
-    }
+    if (!response.ok) return { error: `Failed to fetch the link. Status: ${response.status}` };
 
     const finalUrl = response.url;
     const url = new URL(finalUrl);
     const surl = url.searchParams.get("surl");
-    if (!surl) return { error: "Invalid link. No surl param found." };
+    if (!surl) return { error: "Invalid link. No surl found." };
 
     const text = await response.text();
 
@@ -57,7 +55,14 @@ async function getFileInfo(link, request) {
     const shareid = text.match(/"shareid":(\d+)/)?.[1];
     const uk = text.match(/"uk":(\d+)/)?.[1];
     const bdstoken = text.match(/"bdstoken":"(.*?)"/)?.[1];
-    const jsToken = text.match(/"jsToken":"(.*?)"/)?.[1];
+
+    // 🔥 FIXED jsToken extraction
+    let jsToken = null;
+    const jsMatch = text.match(/fn%28%22([A-F0-9]+)%22%29/);
+    if (jsMatch) {
+      jsToken = jsMatch[1];
+    }
+
     const logid = text.match(/dp-logid=([0-9]+)/)?.[1];
 
     if (!shareid || !uk || !bdstoken || !jsToken || !logid) {
@@ -127,12 +132,8 @@ async function proxyDownload(url, fileName, request) {
       "Accept-Ranges": "bytes",
     });
 
-    if (response.headers.has("Content-Range")) {
-      responseHeaders.set("Content-Range", response.headers.get("Content-Range"));
-    }
-    if (response.headers.has("Content-Length")) {
-      responseHeaders.set("Content-Length", response.headers.get("Content-Length"));
-    }
+    if (response.headers.has("Content-Range")) responseHeaders.set("Content-Range", response.headers.get("Content-Range"));
+    if (response.headers.has("Content-Length")) responseHeaders.set("Content-Length", response.headers.get("Content-Length"));
 
     return new Response(response.body, { status: response.status, headers: responseHeaders });
   } catch (error) {
