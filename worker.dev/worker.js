@@ -1,4 +1,4 @@
-const COOKIE = "<cookie>"; // 🔥 Replace with your real TeraBox cookie
+const COOKIE = "<cookie>"; // Replace with your actual cookie
 
 const HEADERS = {
   "Accept": "application/json, text/plain, */*",
@@ -9,7 +9,14 @@ const HEADERS = {
   "Host": "www.terabox.app",
   "Upgrade-Insecure-Requests": "1",
   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36 Edg/135.0.0.0",
+  "sec-ch-ua": '"Microsoft Edge";v="135", "Not-A.Brand";v="8", "Chromium";v="135"',
+  "Sec-Fetch-Dest": "document",
+  "Sec-Fetch-Mode": "navigate",
+  "Sec-Fetch-Site": "none",
+  "Sec-Fetch-User": "?1",
   "Cookie": COOKIE,
+  "sec-ch-ua-mobile": "?0",
+  "sec-ch-ua-platform": '"Windows"',
 };
 
 const DL_HEADERS = {
@@ -23,13 +30,6 @@ const DL_HEADERS = {
   "Cookie": COOKIE,
 };
 
-const CORS_HEADERS = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type,Range",
-  "Access-Control-Expose-Headers": "Content-Length,Content-Range"
-};
-
 function getSize(sizeBytes) {
   if (sizeBytes >= 1024 * 1024 * 1024) return `${(sizeBytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
   if (sizeBytes >= 1024 * 1024) return `${(sizeBytes / (1024 * 1024)).toFixed(2)} MB`;
@@ -37,37 +37,34 @@ function getSize(sizeBytes) {
   return `${sizeBytes} bytes`;
 }
 
-function findBetween(str, start, end) {
-  const startIndex = str.indexOf(start);
-  if (startIndex === -1) return "";
-  const endIndex = str.indexOf(end, startIndex + start.length);
-  if (endIndex === -1) return "";
-  return str.slice(startIndex + start.length, endIndex);
-}
-
 async function getFileInfo(link, request) {
   try {
     if (!link) return { error: "Link cannot be empty." };
 
     let response = await fetch(link, { headers: HEADERS });
-    if (!response.ok) return { error: `Failed initial fetch. Status ${response.status}` };
+    if (!response.ok) {
+      return { error: `Failed to fetch the initial link. Status: ${response.status}` };
+    }
 
     const finalUrl = response.url;
     const url = new URL(finalUrl);
     const surl = url.searchParams.get("surl");
-    if (!surl) return { error: "Invalid link format." };
+    if (!surl) return { error: "Invalid link. No surl param found." };
 
-    response = await fetch(finalUrl, { headers: HEADERS });
     const text = await response.text();
 
-    const jsToken = findBetween(text, 'fn%28%22', '%22%29');
-    const logid = findBetween(text, 'dp-logid=', '&');
-    const bdstoken = findBetween(text, 'bdstoken":"', '"');
-    const shareid = findBetween(text, '"shareid":', ',');
-    const uk = findBetween(text, '"uk":', ',');
+    // Regex token extraction
+    const shareid = text.match(/"shareid":(\d+)/)?.[1];
+    const uk = text.match(/"uk":(\d+)/)?.[1];
+    const bdstoken = text.match(/"bdstoken":"(.*?)"/)?.[1];
+    const jsToken = text.match(/"jsToken":"(.*?)"/)?.[1];
+    const logid = text.match(/dp-logid=([0-9]+)/)?.[1];
 
-    if (!jsToken || !logid || !bdstoken || !shareid || !uk) {
-      return { error: "Failed to extract required tokens." };
+    if (!shareid || !uk || !bdstoken || !jsToken || !logid) {
+      return {
+        error: "Failed to extract one or more required tokens.",
+        debug: { shareid, uk, bdstoken, jsToken, logid }
+      };
     }
 
     const params = new URLSearchParams({
@@ -83,143 +80,119 @@ async function getFileInfo(link, request) {
       order: "asc",
       site_referer: finalUrl,
       shorturl: surl,
-      root: "1,"
+      root: "1,",
+      shareid,
+      uk,
     });
 
     response = await fetch(`https://dm.terabox.app/share/list?${params}`, { headers: HEADERS });
     const data = await response.json();
 
     if (!data || !data.list || !data.list.length || data.errno) {
-      return { error: data.errmsg || "Failed to fetch file list." };
+      return { error: data.errmsg || "Failed to retrieve file list." };
     }
 
     const fileInfo = data.list[0];
-
-    // 🔥 Step 2: Grab the real dlink
-    const downloadParams = new URLSearchParams({
-      app_id: "250528",
-      web: "1",
-      channel: "dubox",
-      clienttype: "0",
-      jsToken,
-      "dp-logid": logid,
-      shareid: shareid.replace(/\D/g, ""), // clean digits only
-      uk: uk.replace(/\D/g, ""),
-      fs_id: fileInfo.fs_id,
-    });
-
-    const downloadResp = await fetch(`https://d.terabox.com/api/download?${downloadParams}`, { headers: HEADERS });
-    const downloadData = await downloadResp.json();
-
-    let dlink = "";
-    if (downloadData && downloadData.list && downloadData.list.length > 0) {
-      dlink = downloadData.list[0].dlink || "";
-    }
-
     return {
       file_name: fileInfo.server_filename || "",
-      download_link: dlink,
+      download_link: fileInfo.dlink || "",
       thumbnail: fileInfo.thumbs?.url3 || "",
       file_size: getSize(parseInt(fileInfo.size || 0)),
       size_bytes: parseInt(fileInfo.size || 0),
-      proxy_url: dlink
-        ? `https://${new URL(request.url).host}/proxy?url=${encodeURIComponent(dlink)}&file_name=${encodeURIComponent(fileInfo.server_filename || 'download')}`
-        : "",
+      proxy_url: `https://${new URL(request.url).host}/proxy?url=${encodeURIComponent(fileInfo.dlink)}&file_name=${encodeURIComponent(fileInfo.server_filename || 'download')}`,
     };
-  } catch (err) {
-    return { error: `Error: ${err.message}` };
+  } catch (error) {
+    return { error: `An error occurred: ${error.message}` };
   }
 }
 
 async function proxyDownload(url, fileName, request) {
   try {
     const headers = new Headers(DL_HEADERS);
-    const rangeHeader = request.headers.get('Range');
-    if (rangeHeader) headers.set('Range', rangeHeader);
+    const rangeHeader = request.headers.get("Range");
+    if (rangeHeader) headers.set("Range", rangeHeader);
 
-    const response = await fetch(url, { headers, redirect: 'follow' });
-
+    const response = await fetch(url, { headers, redirect: "follow" });
     if (!response.ok && response.status !== 206) {
-      return new Response(JSON.stringify({ error: `Download failed. Status ${response.status}` }), {
+      return new Response(JSON.stringify({ error: `Failed to fetch download: ${response.status}` }), {
         status: 502,
         headers: { "Content-Type": "application/json" },
       });
     }
 
     const responseHeaders = new Headers({
-      'Cache-Control': 'public, max-age=3600',
-      'Content-Type': response.headers.get('Content-Type') || 'application/octet-stream',
-      'Content-Disposition': `inline; filename="${encodeURIComponent(fileName)}"`,
-      'Accept-Ranges': 'bytes'
+      "Cache-Control": "public, max-age=3600",
+      "Content-Type": response.headers.get("Content-Type") || "application/octet-stream",
+      "Content-Disposition": `inline; filename="${encodeURIComponent(fileName)}"`,
+      "Accept-Ranges": "bytes",
     });
 
-    if (response.headers.has('Content-Range')) responseHeaders.set('Content-Range', response.headers.get('Content-Range'));
-    if (response.headers.has('Content-Length')) responseHeaders.set('Content-Length', response.headers.get('Content-Length'));
+    if (response.headers.has("Content-Range")) {
+      responseHeaders.set("Content-Range", response.headers.get("Content-Range"));
+    }
+    if (response.headers.has("Content-Length")) {
+      responseHeaders.set("Content-Length", response.headers.get("Content-Length"));
+    }
 
     return new Response(response.body, { status: response.status, headers: responseHeaders });
-  } catch (err) {
-    return new Response(JSON.stringify({ error: `Proxy error: ${err.message}` }), {
+  } catch (error) {
+    return new Response(JSON.stringify({ error: `Proxy error: ${error.message}` }), {
       status: 500,
       headers: { "Content-Type": "application/json" },
     });
   }
 }
 
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type,Range",
+  "Access-Control-Expose-Headers": "Content-Length,Content-Range"
+};
+
 export default {
   async fetch(request) {
-    try {
-      const url = new URL(request.url);
+    const url = new URL(request.url);
 
-      if (request.method === "OPTIONS") {
-        return new Response(null, { headers: CORS_HEADERS });
-      }
+    if (request.method === "OPTIONS") {
+      return new Response(null, { headers: CORS_HEADERS });
+    }
 
-      // GET ?url=terabox-link
-      if (request.method === "GET" && url.searchParams.get("url")) {
-        const link = url.searchParams.get("url");
-        const fileInfo = await getFileInfo(link, request);
-        return new Response(JSON.stringify(fileInfo), {
-          status: fileInfo.error ? 400 : 200,
+    if (request.method === "GET" && url.pathname === "/file") {
+      const link = url.searchParams.get("url");
+      if (!link) {
+        return new Response(JSON.stringify({ error: "No URL provided." }), {
+          status: 400,
           headers: { "Content-Type": "application/json", ...CORS_HEADERS }
         });
       }
-
-      // POST { link: "terabox-link" }
-      if (request.method === "POST" && url.pathname === "/") {
-        const { link } = await request.json();
-        const fileInfo = await getFileInfo(link, request);
-        return new Response(JSON.stringify(fileInfo), {
-          status: fileInfo.error ? 400 : 200,
-          headers: { "Content-Type": "application/json", ...CORS_HEADERS }
-        });
-      }
-
-      // Proxy download
-      if (request.method === "GET" && url.pathname === "/proxy") {
-        const downloadUrl = url.searchParams.get("url");
-        const fileName = url.searchParams.get("file_name") || "download";
-        if (!downloadUrl) {
-          return new Response(JSON.stringify({ error: "No URL provided for proxy." }), {
-            status: 400,
-            headers: { "Content-Type": "application/json", ...CORS_HEADERS }
-          });
-        }
-        const proxyResponse = await proxyDownload(downloadUrl, fileName, request);
-        for (const [k, v] of Object.entries(CORS_HEADERS)) {
-          proxyResponse.headers.set(k, v);
-        }
-        return proxyResponse;
-      }
-
-      return new Response(JSON.stringify({ error: "Not Found" }), {
-        status: 404,
-        headers: { "Content-Type": "application/json", ...CORS_HEADERS }
-      });
-    } catch (err) {
-      return new Response(JSON.stringify({ error: `Server error: ${err.message}` }), {
-        status: 500,
+      const fileInfo = await getFileInfo(link, request);
+      return new Response(JSON.stringify(fileInfo), {
+        status: fileInfo.error ? 400 : 200,
         headers: { "Content-Type": "application/json", ...CORS_HEADERS }
       });
     }
-  }
+
+    if (request.method === "GET" && url.pathname === "/proxy") {
+      const downloadUrl = url.searchParams.get("url");
+      const fileName = url.searchParams.get("file_name") || "download";
+      if (!downloadUrl) {
+        return new Response(JSON.stringify({ error: "No URL provided for proxy." }), {
+          status: 400,
+          headers: { "Content-Type": "application/json", ...CORS_HEADERS }
+        });
+      }
+      const proxyResponse = await proxyDownload(downloadUrl, fileName, request);
+      proxyResponse.headers.set("Access-Control-Allow-Origin", "*");
+      proxyResponse.headers.set("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+      proxyResponse.headers.set("Access-Control-Allow-Headers", "Content-Type,Range");
+      proxyResponse.headers.set("Access-Control-Expose-Headers", "Content-Length,Content-Range");
+      return proxyResponse;
+    }
+
+    return new Response(JSON.stringify({ error: "Endpoint not found." }), {
+      status: 404,
+      headers: { "Content-Type": "application/json", ...CORS_HEADERS }
+    });
+  },
 };
