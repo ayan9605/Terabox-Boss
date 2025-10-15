@@ -1,4 +1,4 @@
-
+fastapi
 aiohttp
 pymongo[srv]==3.12.3  
 motor==2.5.1 
@@ -21,3 +21,4 @@ setuptools
 selenium>=4.0.0
 webdriver-manager
 terabox-downloader
+uvicorn
