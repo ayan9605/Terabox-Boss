@@ -1,12 +1,9 @@
 #please give credits https://github.com/MN-BOTS
 #  @MrMNTG @MusammilN
 import os
-import re
 import tempfile
 import requests
 import asyncio
-from datetime import datetime, timedelta
-from urllib.parse import urlencode, urlparse, parse_qs
 from pyrogram import Client 
 from pyrogram import filters
 from pyrogram.types import Message
@@ -27,44 +24,54 @@ last_upload_col = db["terabox_lastupload"]
 
 TERABOX_REGEX = r'https?://(?:www\.)?[^/\s]*tera[^/\s]*\.[a-z]+/s/[^\s]+'
 
-COOKIE = "ndus=YzrYlCHteHuixx7IN5r0fc3sajSOYAHfqDoPM0dP" # add your own cookies like ndus=YzrYlCHteHuixx7IN5r0ABCDFXDGSTGBDJKLBKMKH
+# API Configuration
+API_BASE_URL = "https://terabox-fastapi.lily445545.workers.dev"
 
-HEADERS = {
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Accept-Language": "en-US,en;q=0.9,hi;q=0.8",
-    "Connection": "keep-alive",
-    "DNT": "1",
-    "Host": "www.terabox.app",
-    "Upgrade-Insecure-Requests": "1",
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                  "AppleWebKit/537.36 (KHTML, like Gecko) "
-                  "Chrome/135.0.0.0 Safari/537.36 Edg/135.0.0.0",
-    "sec-ch-ua": '"Microsoft Edge";v="135", "Not-A.Brand";v="8", "Chromium";v="135"',
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Sec-Fetch-User": "?1",
-    "Cookie": COOKIE,
-    "sec-ch-ua-mobile": "?0",
-    "sec-ch-ua-platform": '"Windows"',
-}
+def get_file_info_from_api(share_url: str) -> dict:
+    """
+    Fetch file information from TeraBox FastAPI
+    
+    Args:
+        share_url: TeraBox share URL
+        
+    Returns:
+        dict with file information including download link
+        
+    Raises:
+        ValueError: If API request fails or returns error
+    """
+    try:
+        api_url = f"{API_BASE_URL}/api?url={share_url}"
+        response = requests.get(api_url, timeout=30)
+        response.raise_for_status()
+        
+        data = response.json()
+        
+        if not data.get("ok"):
+            raise ValueError("API returned error response")
+            
+        if not data.get("files") or len(data["files"]) == 0:
+            raise ValueError("No files found in the response")
+        
+        file_info = data["files"][0]
+        
+        return {
+            "name": file_info.get("name", "download"),
+            "download_link": file_info.get("fast_download", ""),
+            "size_str": file_info.get("size", "Unknown"),
+            "size_bytes": file_info.get("bytes", 0),
+            "thumb": file_info.get("thumb", ""),
+            "stream_link": file_info.get("stream", "")
+        }
+        
+    except requests.RequestException as e:
+        raise ValueError(f"API request failed: {str(e)}")
+    except (KeyError, IndexError) as e:
+        raise ValueError(f"Invalid API response format: {str(e)}")
 
-DL_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                  "AppleWebKit/537.36 (KHTML, like Gecko) "
-                  "Chrome/91.0.4472.124 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;"
-              "q=0.9,image/webp,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.5",
-    "Referer": "https://www.terabox.com/",
-    "DNT": "1",
-    "Connection": "keep-alive",
-    "Upgrade-Insecure-Requests": "1",
-    "Cookie": COOKIE,
-}
 
 def get_size(bytes_len: int) -> str:
+    """Convert bytes to human-readable format"""
     if bytes_len >= 1024 ** 3:
         return f"{bytes_len / 1024**3:.2f} GB"
     if bytes_len >= 1024 ** 2:
@@ -72,56 +79,6 @@ def get_size(bytes_len: int) -> str:
     if bytes_len >= 1024:
         return f"{bytes_len / 1024:.2f} KB"
     return f"{bytes_len} bytes"
-
-def find_between(text: str, start: str, end: str) -> str:
-    try:
-        return text.split(start, 1)[1].split(end, 1)[0]
-    except Exception:
-        return ""
-
-def get_file_info(share_url: str) -> dict:
-    resp = requests.get(share_url, headers=HEADERS, allow_redirects=True)
-    if resp.status_code != 200:
-        raise ValueError(f"Failed to fetch share page ({resp.status_code})")
-    final_url = resp.url
-
-    parsed = urlparse(final_url)
-    surl = parse_qs(parsed.query).get("surl", [None])[0]
-    if not surl:
-        raise ValueError("Invalid share URL (missing surl)")
-
-    page = requests.get(final_url, headers=HEADERS)
-    html = page.text
-
-    js_token = find_between(html, 'fn%28%22', '%22%29')
-    logid = find_between(html, 'dp-logid=', '&')
-    bdstoken = find_between(html, 'bdstoken":"', '"')
-    if not all([js_token, logid, bdstoken]):
-        raise ValueError("Failed to extract authentication tokens")
-
-    params = {
-        "app_id": "250528", "web": "1", "channel": "dubox",
-        "clienttype": "0", "jsToken": js_token, "dp-logid": logid,
-        "page": "1", "num": "20", "by": "name", "order": "asc",
-        "site_referer": final_url, "shorturl": surl, "root": "1,",
-    }
-    info = requests.get(
-        "https://www.terabox.app/share/list?" + urlencode(params),
-        headers=HEADERS
-    ).json()
-
-    if info.get("errno") or not info.get("list"):
-        errmsg = info.get("errmsg", "Unknown error")
-        raise ValueError(f"List API error: {errmsg}")
-
-    file = info["list"][0]
-    size_bytes = int(file.get("size", 0))
-    return {
-        "name": file.get("server_filename", "download"),
-        "download_link": file.get("dlink", ""),
-        "size_bytes": size_bytes,
-        "size_str": get_size(size_bytes)
-    }
 
 
 @Client.on_message(filters.private & filters.regex(TERABOX_REGEX))
@@ -143,27 +100,58 @@ async def handle_terabox(client, message: Message):
         return
 
     url = message.text.strip()
+    status_msg = await message.reply("🔍 Fetching file info...")
+    
     try:
-        info = get_file_info(url)
+        info = get_file_info_from_api(url)
     except Exception as e:
-        return await message.reply(f"❌ Failed to get file info:\n{e}")
+        await status_msg.edit(f"❌ Failed to get file info:\n`{e}`")
+        return
+
+    if not info["download_link"]:
+        await status_msg.edit("❌ Could not retrieve download link")
+        return
 
     temp_path = os.path.join(tempfile.gettempdir(), info["name"])
 
-    await message.reply("📥 Downloading...")
+    await status_msg.edit("📥 Downloading file...")
 
     try:
-        with requests.get(info["download_link"], headers=DL_HEADERS, stream=True) as r:
+        # Download using the fast_download link from API
+        with requests.get(info["download_link"], stream=True, timeout=60) as r:
             r.raise_for_status()
+            total_size = int(r.headers.get('content-length', 0))
+            
             with open(temp_path, "wb") as f:
-                shutil.copyfileobj(r.raw, f)
+                downloaded = 0
+                chunk_size = 1024 * 1024  # 1MB chunks
+                
+                for chunk in r.iter_content(chunk_size=chunk_size):
+                    if chunk:
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        
+                        # Update progress every 10MB
+                        if downloaded % (10 * 1024 * 1024) < chunk_size:
+                            progress = (downloaded / total_size * 100) if total_size > 0 else 0
+                            try:
+                                await status_msg.edit(
+                                    f"📥 Downloading: {progress:.1f}%\n"
+                                    f"📦 {get_size(downloaded)} / {info['size_str']}"
+                                )
+                            except:
+                                pass
+
+        await status_msg.edit("📤 Uploading to Telegram...")
 
         caption = (
-            f"File Name: {info['name']}\n"
-            f"File Size: {info['size_str']}\n"
-            f"Link: {url}"
+            f"📄 **File Name:** `{info['name']}`\n"
+            f"📦 **File Size:** {info['size_str']}\n"
+            f"🔗 **Source:** [TeraBox Link]({url})\n\n"
+            f"⚡ Powered by @MrMNTG"
         )
 
+        # Upload to channel if configured
         if CHANNEL.ID:
             await client.send_document(
                 chat_id=CHANNEL.ID,
@@ -172,6 +160,7 @@ async def handle_terabox(client, message: Message):
                 file_name=info["name"]
             )
 
+        # Upload to user with auto-delete
         sent_msg = await client.send_document(
             chat_id=message.chat.id,
             document=temp_path,
@@ -180,15 +169,24 @@ async def handle_terabox(client, message: Message):
             protect_content=True
         )
 
-        await message.reply("✅ File will be deleted from your chat after 12 hours.")
+        await status_msg.delete()
+        await message.reply("✅ File uploaded successfully!\n⏰ Will be auto-deleted in 12 hours.")
+        
+        # Auto-delete after 12 hours
         await asyncio.sleep(43200)
         try:
             await sent_msg.delete()
         except Exception:
             pass
 
+    except requests.RequestException as e:
+        await status_msg.edit(f"❌ Download failed:\n`{str(e)}`")
     except Exception as e:
-        await message.reply(f"❌ Upload failed:\n`{e}`")
+        await status_msg.edit(f"❌ Upload failed:\n`{str(e)}`")
     finally:
+        # Cleanup temp file
         if os.path.exists(temp_path):
-            os.remove(temp_path)
+            try:
+                os.remove(temp_path)
+            except:
+                pass
