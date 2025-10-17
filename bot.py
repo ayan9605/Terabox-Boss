@@ -2,11 +2,11 @@ import logging
 import asyncio
 import uvicorn
 import os
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
 from pyrogram import Client
 from pyrogram.errors import FloodWait
-from pyrogram.raw import types as raw_types
 from config import BOT, API, OWNER
+import json
 
 # =============================
 # Logging Configuration
@@ -19,7 +19,7 @@ logging.getLogger("pyrogram").setLevel(logging.ERROR)
 # =============================
 app = FastAPI()
 
-# Global bot instance and update tracker
+# Global bot instance
 bot_instance = None
 bot_ready = asyncio.Event()
 processed_updates = set()
@@ -34,301 +34,98 @@ async def health():
     return {"status": "healthy", "bot_ready": bot_ready.is_set()}
 
 # =============================
-# Webhook Endpoint
+# Webhook Endpoint - SIMPLIFIED
 # =============================
 @app.post(f"/webhook/{{bot_token}}")
-async def webhook_handler(bot_token: str, request: Request):
+async def webhook_handler(bot_token: str, request: Request, background_tasks: BackgroundTasks):
     """
-    Telegram webhook endpoint
+    Telegram webhook endpoint - Simplified version
     """
     if bot_token != BOT.TOKEN:
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404)
     
     try:
-        await asyncio.wait_for(bot_ready.wait(), timeout=30.0)
+        await asyncio.wait_for(bot_ready.wait(), timeout=10.0)
     except asyncio.TimeoutError:
-        logging.error("Bot initialization timeout")
         raise HTTPException(status_code=503, detail="Bot not ready")
     
     if bot_instance is None:
-        logging.error("Bot instance is None")
         raise HTTPException(status_code=503, detail="Bot not initialized")
     
     try:
-        update = await request.json()
+        # Get raw update data
+        update_data = await request.json()
+        update_id = update_data.get("update_id")
         
-        update_id = update.get("update_id")
+        # Check duplicate
         if update_id in processed_updates:
-            logging.info(f"⚠️ Duplicate update {update_id} ignored")
             return {"ok": True}
         
         processed_updates.add(update_id)
         
         if len(processed_updates) > MAX_UPDATE_CACHE:
             processed_updates.clear()
-            logging.info("🔄 Update cache cleared")
         
-        asyncio.create_task(process_telegram_update(update))
+        # ✅ SIMPLE: Use Telegram Bot API directly to forward update
+        # This bypasses Pyrogram's complex parsing
+        background_tasks.add_task(handle_update_simple, update_data)
         
         return {"ok": True}
     
     except Exception as e:
-        logging.error(f"Error in webhook_handler: {e}", exc_info=True)
+        logging.error(f"Webhook error: {e}", exc_info=True)
         return {"ok": True}
 
 
-async def process_telegram_update(update: dict):
+async def handle_update_simple(update_data: dict):
     """
-    Processes Telegram updates properly with user/chat data
+    ✅ SIMPLIFIED: Process updates using basic approach
     """
     try:
-        from pyrogram import types
-        
-        # ✅ Handle MESSAGE updates
-        if "message" in update:
-            message_data = update["message"]
+        # Handle messages
+        if "message" in update_data:
+            msg = update_data["message"]
+            chat_id = msg.get("chat", {}).get("id")
+            text = msg.get("text", "")
             
-            # ✅ CRITICAL: Fetch user and chat data properly
-            users = {}
-            chats = {}
-            
-            # Get user data
-            if "from" in message_data:
-                user_data = message_data["from"]
-                user_id = user_data.get("id")
-                if user_id:
-                    users[user_id] = raw_types.User(
-                        id=user_id,
-                        is_self=False,
-                        is_contact=False,
-                        is_mutual_contact=False,
-                        is_deleted=user_data.get("is_bot", False),
-                        is_bot=user_data.get("is_bot", False),
-                        is_verified=False,
-                        is_restricted=False,
-                        is_scam=False,
-                        is_fake=False,
-                        is_support=False,
-                        first_name=user_data.get("first_name", ""),
-                        last_name=user_data.get("last_name"),
-                        username=user_data.get("username"),
-                        language_code=user_data.get("language_code"),
-                        phone=None,
-                        photo=None,
-                        restrictions=None,
-                        status=None,
-                        bot_info_version=None,
-                        bot_inline_placeholder=None,
-                        access_hash=0
-                    )
-            
-            # Get chat data
-            if "chat" in message_data:
-                chat_data = message_data["chat"]
-                chat_id = chat_data.get("id")
-                chat_type = chat_data.get("type")
+            # Import and run handlers manually
+            if text:
+                # This triggers your plugins
+                # Pyrogram's dispatcher will handle it
+                from pyrogram import types
                 
-                if chat_id:
-                    if chat_type == "private":
-                        # For private chats, reuse user data
-                        chats[chat_id] = users.get(chat_id, raw_types.User(
-                            id=chat_id,
-                            is_self=False,
-                            is_contact=False,
-                            is_mutual_contact=False,
-                            is_deleted=False,
-                            is_bot=False,
-                            is_verified=False,
-                            is_restricted=False,
-                            is_scam=False,
-                            is_fake=False,
-                            is_support=False,
-                            first_name=chat_data.get("first_name", "User"),
-                            last_name=chat_data.get("last_name"),
-                            username=chat_data.get("username"),
-                            language_code=None,
-                            phone=None,
-                            photo=None,
-                            restrictions=None,
-                            status=None,
-                            bot_info_version=None,
-                            bot_inline_placeholder=None,
-                            access_hash=0
-                        ))
-                    else:
-                        # For groups/channels
-                        chats[chat_id] = raw_types.Chat(
-                            id=chat_id,
-                            title=chat_data.get("title", "Group"),
-                            photo=None,
-                            participants_count=0,
-                            date=0,
-                            version=0,
-                            migrated_to=None,
-                            admin_rights=None,
-                            default_banned_rights=None
-                        )
-            
-            # ✅ CRITICAL: Await the async _parse method
-            message = await types.Message._parse(
-                bot_instance, 
-                message_data, 
-                users=users, 
-                chats=chats
-            )
-            
-            # Process through handlers
-            for group in sorted(bot_instance.dispatcher.groups.keys()):
-                handlers = bot_instance.dispatcher.groups[group]
-                
-                for handler in handlers:
-                    try:
-                        if await handler.check(bot_instance, message):
-                            await handler.callback(bot_instance, message)
-                            break
-                    except Exception as e:
-                        logging.error(f"Handler error: {e}", exc_info=True)
-                        continue
-        
-        # ✅ Handle EDITED MESSAGE updates
-        elif "edited_message" in update:
-            message_data = update["edited_message"]
-            
-            users = {}
-            chats = {}
-            
-            if "from" in message_data:
-                user_data = message_data["from"]
-                user_id = user_data.get("id")
-                if user_id:
-                    users[user_id] = raw_types.User(
-                        id=user_id,
+                # Create message object
+                message = types.Message(
+                    id=msg.get("message_id"),
+                    from_user=types.User(
+                        id=msg.get("from", {}).get("id"),
                         is_self=False,
-                        is_contact=False,
-                        is_mutual_contact=False,
-                        is_deleted=user_data.get("is_bot", False),
-                        is_bot=user_data.get("is_bot", False),
-                        is_verified=False,
-                        is_restricted=False,
-                        is_scam=False,
-                        is_fake=False,
-                        is_support=False,
-                        first_name=user_data.get("first_name", ""),
-                        last_name=user_data.get("last_name"),
-                        username=user_data.get("username"),
-                        language_code=user_data.get("language_code"),
-                        phone=None,
-                        photo=None,
-                        restrictions=None,
-                        status=None,
-                        bot_info_version=None,
-                        bot_inline_placeholder=None,
-                        access_hash=0
-                    )
-            
-            if "chat" in message_data:
-                chat_data = message_data["chat"]
-                chat_id = chat_data.get("id")
-                if chat_id:
-                    chats[chat_id] = users.get(chat_id, raw_types.User(
+                        is_bot=msg.get("from", {}).get("is_bot", False),
+                        first_name=msg.get("from", {}).get("first_name", ""),
+                        last_name=msg.get("from", {}).get("last_name"),
+                        username=msg.get("from", {}).get("username")
+                    ) if "from" in msg else None,
+                    date=msg.get("date"),
+                    chat=types.Chat(
                         id=chat_id,
-                        is_self=False,
-                        is_contact=False,
-                        is_mutual_contact=False,
-                        is_deleted=False,
-                        is_bot=False,
-                        is_verified=False,
-                        is_restricted=False,
-                        is_scam=False,
-                        is_fake=False,
-                        is_support=False,
-                        first_name=chat_data.get("first_name", "User"),
-                        last_name=chat_data.get("last_name"),
-                        username=chat_data.get("username"),
-                        language_code=None,
-                        phone=None,
-                        photo=None,
-                        restrictions=None,
-                        status=None,
-                        bot_info_version=None,
-                        bot_inline_placeholder=None,
-                        access_hash=0
-                    ))
-            
-            message = await types.Message._parse(
-                bot_instance, 
-                message_data, 
-                users=users, 
-                chats=chats
-            )
-            
-            for group in sorted(bot_instance.dispatcher.groups.keys()):
-                handlers = bot_instance.dispatcher.groups[group]
+                        type=msg.get("chat", {}).get("type", "private"),
+                        title=msg.get("chat", {}).get("title")
+                    ),
+                    text=text
+                )
                 
-                for handler in handlers:
-                    try:
-                        if await handler.check(bot_instance, message):
-                            await handler.callback(bot_instance, message)
-                            break
-                    except Exception as e:
-                        logging.error(f"Handler error: {e}", exc_info=True)
-                        continue
-        
-        # ✅ Handle CALLBACK QUERY updates
-        elif "callback_query" in update:
-            callback_data = update["callback_query"]
-            
-            users = {}
-            
-            if "from" in callback_data:
-                user_data = callback_data["from"]
-                user_id = user_data.get("id")
-                if user_id:
-                    users[user_id] = raw_types.User(
-                        id=user_id,
-                        is_self=False,
-                        is_contact=False,
-                        is_mutual_contact=False,
-                        is_deleted=user_data.get("is_bot", False),
-                        is_bot=user_data.get("is_bot", False),
-                        is_verified=False,
-                        is_restricted=False,
-                        is_scam=False,
-                        is_fake=False,
-                        is_support=False,
-                        first_name=user_data.get("first_name", ""),
-                        last_name=user_data.get("last_name"),
-                        username=user_data.get("username"),
-                        language_code=user_data.get("language_code"),
-                        phone=None,
-                        photo=None,
-                        restrictions=None,
-                        status=None,
-                        bot_info_version=None,
-                        bot_inline_placeholder=None,
-                        access_hash=0
-                    )
-            
-            callback = await types.CallbackQuery._parse(
-                bot_instance, 
-                callback_data, 
-                users=users
-            )
-            
-            for group in sorted(bot_instance.dispatcher.groups.keys()):
-                handlers = bot_instance.dispatcher.groups[group]
-                
-                for handler in handlers:
-                    try:
-                        if await handler.check(bot_instance, callback):
-                            await handler.callback(bot_instance, callback)
-                            break
-                    except Exception as e:
-                        logging.error(f"Handler error: {e}", exc_info=True)
-                        continue
-                        
+                # Dispatch to handlers
+                for group in sorted(bot_instance.dispatcher.groups.keys()):
+                    for handler in bot_instance.dispatcher.groups[group]:
+                        try:
+                            if await handler.check(bot_instance, message):
+                                await handler.callback(bot_instance, message)
+                                break
+                        except Exception as e:
+                            logging.error(f"Handler error: {e}", exc_info=True)
+                            
     except Exception as e:
-        logging.error(f"Error in process_telegram_update: {e}", exc_info=True)
+        logging.error(f"Error handling update: {e}", exc_info=True)
 
 
 # =============================
@@ -343,7 +140,8 @@ class MN_Bot(Client):
             bot_token=BOT.TOKEN,
             plugins=dict(root="plugins"),
             workers=16,
-            workdir="/tmp"
+            workdir="/tmp",
+            no_updates=True  # ✅ Disable auto-polling for webhook mode
         )
 
     async def start(self):
@@ -356,18 +154,12 @@ class MN_Bot(Client):
         try:
             await self.send_message(
                 chat_id=OWNER.ID,
-                text=f"✅ {me.first_name} BOT started successfully"
-            )
-        except FloodWait as e:
-            await asyncio.sleep(e.value)
-            await self.send_message(
-                chat_id=OWNER.ID,
-                text=f"✅ {me.first_name} BOT started successfully"
+                text=f"✅ {me.first_name} BOT started"
             )
         except Exception as e:
-            logging.warning(f"Could not send startup message to owner: {e}")
+            logging.warning(f"Startup message failed: {e}")
 
-        logging.info(f"✅ {me.first_name} BOT started successfully")
+        logging.info(f"✅ {me.first_name} BOT ready")
 
     async def stop(self, *args):
         await super().stop()
@@ -378,102 +170,77 @@ class MN_Bot(Client):
 # Webhook Setup
 # =============================
 async def setup_webhook(bot: MN_Bot, webhook_url: str):
-    """
-    Configures Telegram webhook
-    """
+    """Setup webhook"""
     try:
         import httpx
         
-        async with httpx.AsyncClient() as client:
-            delete_response = await client.post(
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # Delete old
+            await client.post(
                 f"https://api.telegram.org/bot{BOT.TOKEN}/deleteWebhook",
                 json={"drop_pending_updates": True}
             )
-            logging.info(f"Old webhook deleted: {delete_response.json()}")
             
             await asyncio.sleep(2)
             
-            set_response = await client.post(
+            # Set new
+            response = await client.post(
                 f"https://api.telegram.org/bot{BOT.TOKEN}/setWebhook",
                 json={
                     "url": webhook_url,
                     "allowed_updates": ["message", "edited_message", "callback_query"],
-                    "drop_pending_updates": True,
-                    "max_connections": 40
+                    "drop_pending_updates": True
                 }
             )
-            result = set_response.json()
             
+            result = response.json()
             if result.get("ok"):
-                logging.info(f"✅ Webhook set successfully: {webhook_url}")
-                
-                info_response = await client.get(
-                    f"https://api.telegram.org/bot{BOT.TOKEN}/getWebhookInfo"
-                )
-                logging.info(f"📡 Webhook info: {info_response.json()}")
+                logging.info(f"✅ Webhook set: {webhook_url}")
             else:
-                logging.error(f"❌ Failed to set webhook: {result}")
+                logging.error(f"❌ Webhook failed: {result}")
                 
     except Exception as e:
-        logging.error(f"Error setting webhook: {e}")
+        logging.error(f"Webhook setup error: {e}", exc_info=True)
 
 
 # =============================
-# Startup Event
+# Startup
 # =============================
 @app.on_event("startup")
 async def startup_event():
-    """Initialize bot on FastAPI startup"""
     global bot_instance
     
-    logging.info("🚀 Starting bot initialization...")
+    logging.info("🚀 Initializing...")
     
     try:
         WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-        
         if not WEBHOOK_URL:
-            logging.error("❌ WEBHOOK_URL environment variable not set!")
+            logging.error("❌ WEBHOOK_URL not set!")
             return
         
         os.makedirs("/tmp", exist_ok=True)
         
         bot_instance = MN_Bot()
         await bot_instance.start()
-        
         await setup_webhook(bot_instance, WEBHOOK_URL)
         
         bot_ready.set()
-        logging.info("✅ Bot fully initialized and ready!")
+        logging.info("✅ Ready!")
         
     except Exception as e:
-        logging.error(f"❌ Bot initialization failed: {e}", exc_info=True)
+        logging.error(f"❌ Init failed: {e}", exc_info=True)
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """Cleanup on shutdown"""
     global bot_instance
-    
     if bot_instance:
         try:
             await bot_instance.stop()
-            logging.info("🚫 Bot stopped gracefully")
-        except Exception as e:
-            logging.error(f"Error stopping bot: {e}")
+        except:
+            pass
 
 
-# =============================
-# Main Entry Point
-# =============================
 if __name__ == "__main__":
     PORT = int(os.getenv("PORT", 8000))
-    
-    logging.info(f"🚀 Starting server on port {PORT}...")
-    
-    uvicorn.run(
-        "bot:app",
-        host="0.0.0.0",
-        port=PORT,
-        log_level="info",
-        access_log=True
-    )
+    uvicorn.run("bot:app", host="0.0.0.0", port=PORT, log_level="info")
