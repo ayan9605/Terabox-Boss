@@ -183,31 +183,33 @@ class MN_Bot(Client):
         )
 
     async def start(self):
-        """Start bot and notify owner"""
-        await super().start()
-        
-        # Get bot info
-        me = await self.get_me()
-        BOT.USERNAME = f"@{me.username}"
-        self.mention = me.mention
-        self.username = me.username
-        
-        logger.info(f"✅ Bot started: {me.first_name} (@{me.username})")
-        
-        # Try to notify owner
-        try:
-            await self.send_message(
-                chat_id=OWNER.ID,
-                text=f"✅ **{me.first_name} Started Successfully**\n\n"
-                     f"🤖 Username: @{me.username}\n"
-                     f"🆔 Bot ID: `{me.id}`\n"
-                     f"🌐 Mode: Webhook"
-            )
-            logger.info(f"Startup notification sent to owner {OWNER.ID}")
-        except PeerIdInvalid:
-            logger.warning(f"Cannot send to owner {OWNER.ID} - PeerIdInvalid (send /start to bot first)")
-        except Exception as e:
-            logger.warning(f"Could not notify owner: {e}")
+    """Start bot and notify owner"""
+    await super().start()
+    
+    # Get bot info
+    me = await self.get_me()
+    BOT.USERNAME = f"@{me.username}"
+    self.mention = me.mention
+    self.username = me.username
+    
+    logger.info(f"✅ Bot started: {me.first_name} (@{me.username})")
+    
+    # ✅ CRITICAL: Pre-resolve owner peer to avoid PeerIdInvalid
+    try:
+        await self.resolve_peer(OWNER.ID)
+        await self.send_message(
+            chat_id=OWNER.ID,
+            text=f"✅ **{me.first_name} Started Successfully**\n\n"
+                 f"🤖 Username: @{me.username}\n"
+                 f"🆔 Bot ID: `{me.id}`\n"
+                 f"🌐 Mode: Webhook"
+        )
+        logger.info(f"Startup notification sent to owner {OWNER.ID}")
+    except PeerIdInvalid:
+        logger.warning(f"⚠️ Owner {OWNER.ID} not found in session. Owner must send /start to bot first.")
+    except Exception as e:
+        logger.warning(f"Could not notify owner: {e}")
+
 
     async def stop(self, *args):
         """Stop bot gracefully"""
