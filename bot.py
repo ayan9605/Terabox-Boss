@@ -246,40 +246,35 @@ async def setup_webhook(bot: MN_Bot, webhook_url: str):
 async def main():
     global bot_instance
     
-    # Get webhook URL from environment variable
-    WEBHOOK_URL = os.getenv("WEBHOOK_URL")  
+    WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+    PORT = int(os.getenv("PORT", 8000))  # ✅ Dynamic port
     
     if not WEBHOOK_URL:
         logging.error("❌ WEBHOOK_URL environment variable not set!")
-        logging.info("Example: WEBHOOK_URL=https://your-domain.com/webhook/{YOUR_BOT_TOKEN}")
         return
 
     bot_instance = MN_Bot()
-    
-    # Start bot (connects to Telegram but doesn't start polling)
     await bot_instance.start()
-    
-    # Setup webhook
     await setup_webhook(bot_instance, WEBHOOK_URL)
 
-    # FastAPI server config
+    # ✅ Use dynamic port
     config = uvicorn.Config(
         app,
         host="0.0.0.0",
-        port=int(os.getenv("PORT", 8000)),
+        port=PORT,
         loop="asyncio",
         log_level="info"
     )
     server = uvicorn.Server(config)
 
-    # Run FastAPI server
     try:
-        logging.info("🚀 BOT and FastAPI webhook server are now running...")
+        logging.info(f"🚀 BOT running on port {PORT}...")
         await server.serve()
     except (KeyboardInterrupt, SystemExit):
         logging.info("⚠ Shutdown signal received...")
     finally:
         await bot_instance.stop()
+
 
 
 # =============================
