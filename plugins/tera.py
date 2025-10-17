@@ -1,9 +1,8 @@
-#please give credits https://github.com/MN-BOTS
-#  @MrMNTG @MusammilN
 import os
 import tempfile
 import requests
 import asyncio
+import time
 from pyrogram import Client 
 from pyrogram import filters
 from pyrogram.types import Message
@@ -12,8 +11,6 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pymongo import MongoClient
 import shutil
 from config import CHANNEL, DATABASE
-#please give credits https://github.com/MN-BOTS
-#  @MrMNTG @MusammilN
 
 mongo_client = MongoClient(DATABASE.URI)
 db = mongo_client[DATABASE.NAME]
@@ -81,6 +78,72 @@ def get_size(bytes_len: int) -> str:
     return f"{bytes_len} bytes"
 
 
+def progress_bar(percentage: float) -> str:
+    """
+    Generate a visual progress bar
+    
+    Args:
+        percentage: Progress percentage (0-100)
+        
+    Returns:
+        String representing the progress bar
+    """
+    # Progress bar with 20 blocks
+    filled_blocks = int(percentage / 5)
+    empty_blocks = 20 - filled_blocks
+    
+    bar = "█" * filled_blocks + "░" * empty_blocks
+    return f"[{bar}]"
+
+
+def format_time(seconds: int) -> str:
+    """
+    Format seconds into readable time string
+    
+    Args:
+        seconds: Time in seconds
+        
+    Returns:
+        Formatted time string (e.g., "2h 30m 15s" or "45s")
+    """
+    if seconds < 60:
+        return f"{seconds}s"
+    elif seconds < 3600:
+        mins = seconds // 60
+        secs = seconds % 60
+        return f"{mins}m {secs}s"
+    else:
+        hours = seconds // 3600
+        mins = (seconds % 3600) // 60
+        return f"{hours}h {mins}m"
+
+
+def calculate_speed(downloaded: int, elapsed_time: float) -> str:
+    """
+    Calculate download speed
+    
+    Args:
+        downloaded: Bytes downloaded
+        elapsed_time: Time elapsed in seconds
+        
+    Returns:
+        Formatted speed string
+    """
+    if elapsed_time == 0:
+        return "0 B/s"
+    
+    speed = downloaded / elapsed_time
+    
+    if speed >= 1024 ** 3:
+        return f"{speed / 1024**3:.2f} GB/s"
+    elif speed >= 1024 ** 2:
+        return f"{speed / 1024**2:.2f} MB/s"
+    elif speed >= 1024:
+        return f"{speed / 1024:.2f} KB/s"
+    else:
+        return f"{speed:.2f} B/s"
+
+
 @Client.on_message(filters.private & filters.regex(TERABOX_REGEX))
 async def handle_terabox(client, message: Message):
     user_id = message.from_user.id
@@ -114,7 +177,10 @@ async def handle_terabox(client, message: Message):
 
     temp_path = os.path.join(tempfile.gettempdir(), info["name"])
 
-    await status_msg.edit("📥 Downloading file...")
+    # Initialize progress tracking
+    start_time = time.time()
+    last_update_time = start_time
+    downloaded = 0
 
     try:
         # Download using the fast_download link from API
@@ -123,7 +189,6 @@ async def handle_terabox(client, message: Message):
             total_size = int(r.headers.get('content-length', 0))
             
             with open(temp_path, "wb") as f:
-                downloaded = 0
                 chunk_size = 1024 * 1024  # 1MB chunks
                 
                 for chunk in r.iter_content(chunk_size=chunk_size):
@@ -131,18 +196,44 @@ async def handle_terabox(client, message: Message):
                         f.write(chunk)
                         downloaded += len(chunk)
                         
-                        # Update progress every 10MB
-                        if downloaded % (10 * 1024 * 1024) < chunk_size:
-                            progress = (downloaded / total_size * 100) if total_size > 0 else 0
+                        current_time = time.time()
+                        elapsed = current_time - start_time
+                        
+                        # Update progress every 2 seconds or every 5MB
+                        if (current_time - last_update_time >= 2) or (downloaded % (5 * 1024 * 1024) < chunk_size):
+                            last_update_time = current_time
+                            
+                            percentage = (downloaded / total_size * 100) if total_size > 0 else 0
+                            speed = calculate_speed(downloaded, elapsed)
+                            
+                            # Calculate ETA
+                            if downloaded > 0 and elapsed > 0:
+                                remaining_bytes = total_size - downloaded
+                                bytes_per_second = downloaded / elapsed
+                                eta_seconds = int(remaining_bytes / bytes_per_second) if bytes_per_second > 0 else 0
+                                eta_str = format_time(eta_seconds)
+                            else:
+                                eta_str = "calculating..."
+                            
+                            progress_text = (
+                                f"📥 **DOWNLOADING**\n\n"
+                                f"**FILE NAME:** `{info['name'][:30]}{'...' if len(info['name']) > 30 else ''}`\n"
+                                f"**SIZE:** {get_size(total_size)}\n\n"
+                                f"**PROCESS:**\n"
+                                f"{progress_bar(percentage)}\n\n"
+                                f"**SPEED:** {speed}\n"
+                                f"**PROGRESS:** {percentage:.1f}%\n\n"
+                                f"**Downloaded:** {get_size(downloaded)}\n"
+                                f"**ETA:** {eta_str}"
+                            )
+                            
                             try:
-                                await status_msg.edit(
-                                    f"📥 Downloading: {progress:.1f}%\n"
-                                    f"📦 {get_size(downloaded)} / {info['size_str']}"
-                                )
-                            except:
-                                pass
+                                await status_msg.edit(progress_text)
+                            except Exception:
+                                pass  # Ignore flood wait and other edit errors
 
-        await status_msg.edit("📤 Uploading to Telegram...")
+        # Download complete, now uploading
+        await status_msg.edit("📤 **Uploading to Telegram...**")
 
         caption = (
             f"📄 **File Name:** `{info['name']}`\n"
@@ -150,6 +241,11 @@ async def handle_terabox(client, message: Message):
             f"🔗 **Source:** [TeraBox Link]({url})\n\n"
             f"⚡ Powered by @MrMNTG"
         )
+        
+        # Cancel button
+        cancel_button = InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ CANCEL", callback_data="cancel_upload")]
+        ])
 
         # Upload to channel if configured
         if CHANNEL.ID:
@@ -160,29 +256,68 @@ async def handle_terabox(client, message: Message):
                 file_name=info["name"]
             )
 
-        # Upload to user with auto-delete
+        # Upload to user with progress callback
+        upload_start = time.time()
+        
+        async def upload_progress(current, total):
+            nonlocal upload_start
+            
+            elapsed = time.time() - upload_start
+            percentage = (current / total) * 100
+            speed = calculate_speed(current, elapsed)
+            
+            # Calculate upload ETA
+            if current > 0 and elapsed > 0:
+                remaining = total - current
+                rate = current / elapsed
+                eta = int(remaining / rate) if rate > 0 else 0
+                eta_str = format_time(eta)
+            else:
+                eta_str = "calculating..."
+            
+            progress_text = (
+                f"📤 **UPLOADING**\n\n"
+                f"**FILE NAME:** `{info['name'][:30]}{'...' if len(info['name']) > 30 else ''}`\n"
+                f"**SIZE:** {get_size(total)}\n\n"
+                f"**PROCESS:**\n"
+                f"{progress_bar(percentage)}\n\n"
+                f"**SPEED:** {speed}\n"
+                f"**PROGRESS:** {percentage:.1f}%\n\n"
+                f"**Uploaded:** {get_size(current)}\n"
+                f"**ETA:** {eta_str}"
+            )
+            
+            try:
+                await status_msg.edit(progress_text, reply_markup=cancel_button)
+            except Exception:
+                pass
+
         sent_msg = await client.send_document(
             chat_id=message.chat.id,
             document=temp_path,
             caption=caption,
             file_name=info["name"],
-            protect_content=True
+            protect_content=True,
+            progress=upload_progress
         )
 
-        await status_msg.delete()
-        await message.reply("✅ File uploaded successfully!\n⏰ Will be auto-deleted in 12 hours.")
+        await status_msg.edit(
+            "✅ **File uploaded successfully!**\n\n"
+            "⏰ Will be auto-deleted in 12 hours."
+        )
         
         # Auto-delete after 12 hours
         await asyncio.sleep(43200)
         try:
             await sent_msg.delete()
+            await status_msg.delete()
         except Exception:
             pass
 
     except requests.RequestException as e:
-        await status_msg.edit(f"❌ Download failed:\n`{str(e)}`")
+        await status_msg.edit(f"❌ **Download failed:**\n`{str(e)}`")
     except Exception as e:
-        await status_msg.edit(f"❌ Upload failed:\n`{str(e)}`")
+        await status_msg.edit(f"❌ **Upload failed:**\n`{str(e)}`")
     finally:
         # Cleanup temp file
         if os.path.exists(temp_path):
