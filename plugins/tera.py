@@ -3,6 +3,7 @@ import tempfile
 import requests
 import asyncio
 import time
+import mimetypes
 from pyrogram import Client 
 from pyrogram import filters
 from pyrogram.types import Message
@@ -76,6 +77,38 @@ def get_size(bytes_len: int) -> str:
     if bytes_len >= 1024:
         return f"{bytes_len / 1024:.2f} KB"
     return f"{bytes_len} bytes"
+
+
+def detect_file_type(filename: str) -> str:
+    """
+    Detect file type based on extension
+    
+    Args:
+        filename: Name of the file
+        
+    Returns:
+        'video', 'photo', or 'document'
+    """
+    mime_type, _ = mimetypes.guess_type(filename)
+    
+    if mime_type:
+        if mime_type.startswith('video/'):
+            return 'video'
+        elif mime_type.startswith('image/'):
+            return 'photo'
+    
+    # Fallback to extension checking
+    video_extensions = ['.mp4', '.mkv', '.avi', '.mov', '.flv', '.wmv', '.webm', '.m4v', '.3gp']
+    image_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.tiff']
+    
+    ext = os.path.splitext(filename.lower())[1]
+    
+    if ext in video_extensions:
+        return 'video'
+    elif ext in image_extensions:
+        return 'photo'
+    else:
+        return 'document'
 
 
 def progress_bar(percentage: float) -> str:
@@ -177,6 +210,9 @@ async def handle_terabox(client, message: Message):
 
     temp_path = os.path.join(tempfile.gettempdir(), info["name"])
 
+    # Detect file type
+    file_type = detect_file_type(info["name"])
+
     # Initialize progress tracking
     start_time = time.time()
     last_update_time = start_time
@@ -233,13 +269,13 @@ async def handle_terabox(client, message: Message):
                                 pass  # Ignore flood wait and other edit errors
 
         # Download complete, now uploading
-        await status_msg.edit("📤 **Uploading to Telegram...**")
+        await status_msg.edit("📤 **Preparing to upload to Telegram...**")
 
         caption = (
             f"📄 **File Name:** `{info['name']}`\n"
             f"📦 **File Size:** {info['size_str']}\n"
             f"🔗 **Source:** [TeraBox Link]({url})\n\n"
-            f"⚡ Powered by @MrMNTG"
+            f"⚡ Powered by @A.Sayyad"
         )
         
         # Cancel button
@@ -249,20 +285,45 @@ async def handle_terabox(client, message: Message):
 
         # Upload to channel if configured
         if CHANNEL.ID:
-            await client.send_document(
-                chat_id=CHANNEL.ID,
-                document=temp_path,
-                caption=caption,
-                file_name=info["name"]
-            )
+            if file_type == 'video':
+                await client.send_video(
+                    chat_id=CHANNEL.ID,
+                    video=temp_path,
+                    caption=caption,
+                    file_name=info["name"],
+                    has_spoiler=True,  # Enable spoiler effect
+                    supports_streaming=True
+                )
+            elif file_type == 'photo':
+                await client.send_photo(
+                    chat_id=CHANNEL.ID,
+                    photo=temp_path,
+                    caption=caption,
+                    has_spoiler=True  # Enable spoiler effect
+                )
+            else:
+                await client.send_document(
+                    chat_id=CHANNEL.ID,
+                    document=temp_path,
+                    caption=caption,
+                    file_name=info["name"]
+                )
 
         # Upload to user with progress callback
         upload_start = time.time()
+        last_upload_update = upload_start
         
         async def upload_progress(current, total):
-            nonlocal upload_start
+            nonlocal last_upload_update
             
-            elapsed = time.time() - upload_start
+            current_time = time.time()
+            
+            # ✅ Throttle updates: Update every 2 seconds to avoid flood wait
+            if current_time - last_upload_update < 2:
+                return
+                
+            last_upload_update = current_time
+            elapsed = current_time - upload_start
             percentage = (current / total) * 100
             speed = calculate_speed(current, elapsed)
             
@@ -290,19 +351,41 @@ async def handle_terabox(client, message: Message):
             try:
                 await status_msg.edit(progress_text, reply_markup=cancel_button)
             except Exception:
-                pass
+                pass  # Ignore flood wait errors
 
-        sent_msg = await client.send_document(
-            chat_id=message.chat.id,
-            document=temp_path,
-            caption=caption,
-            file_name=info["name"],
-            protect_content=True,
-            progress=upload_progress
-        )
+        # Send based on file type with progress
+        if file_type == 'video':
+            sent_msg = await client.send_video(
+                chat_id=message.chat.id,
+                video=temp_path,
+                caption=caption,
+                file_name=info["name"],
+                protect_content=True,
+                has_spoiler=True,  # Enable spoiler effect for videos
+                supports_streaming=True,
+                progress=upload_progress
+            )
+        elif file_type == 'photo':
+            sent_msg = await client.send_photo(
+                chat_id=message.chat.id,
+                photo=temp_path,
+                caption=caption,
+                protect_content=True,
+                has_spoiler=True,  # Enable spoiler effect for photos
+                progress=upload_progress
+            )
+        else:
+            sent_msg = await client.send_document(
+                chat_id=message.chat.id,
+                document=temp_path,
+                caption=caption,
+                file_name=info["name"],
+                protect_content=True,
+                progress=upload_progress
+            )
 
         await status_msg.edit(
-            "✅ **File uploaded successfully!**\n\n"
+            f"✅ **File uploaded successfully as {file_type.upper()}!**\n\n"
             "⏰ Will be auto-deleted in 12 hours."
         )
         
