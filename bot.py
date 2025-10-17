@@ -2,7 +2,7 @@ import logging
 import asyncio
 import uvicorn
 import os
-from fastapi import FastAPI, Request, HTTPException, Header
+from fastapi import FastAPI, Request, HTTPException
 from pyrogram import Client
 from pyrogram.errors import FloodWait
 from config import BOT, API, OWNER
@@ -18,8 +18,10 @@ logging.getLogger("pyrogram").setLevel(logging.ERROR)
 # =============================
 app = FastAPI()
 
-# Global bot instance
+# Global bot instance and update tracker
 bot_instance = None
+processed_updates = set()  # Track processed update IDs
+MAX_UPDATE_CACHE = 1000  # Prevent memory overflow
 
 @app.get("/")
 async def root():
@@ -43,66 +45,115 @@ async def webhook_handler(request: Request):
     try:
         update = await request.json()
         
-        # Process the update through Pyrogram's update handling system
+        # ✅ CRITICAL: Check for duplicate update_id
+        update_id = update.get("update_id")
+        if update_id in processed_updates:
+            logging.info(f"⚠️ Duplicate update {update_id} ignored")
+            return {"ok": True}  # Return 200 OK immediately
+        
+        # Track this update
+        processed_updates.add(update_id)
+        
+        # Manage cache size to prevent memory overflow
+        if len(processed_updates) > MAX_UPDATE_CACHE:
+            # Remove oldest half
+            processed_updates.clear()
+            logging.info("🔄 Update cache cleared")
+        
+        # ✅ IMPORTANT: Return 200 OK IMMEDIATELY, then process in background
         asyncio.create_task(process_telegram_update(update))
         
-        # Immediately return 200 OK to Telegram
         return {"ok": True}
+    
     except Exception as e:
-        logging.error(f"Error processing webhook: {e}")
+        logging.error(f"Error in webhook_handler: {e}")
         # Still return 200 to prevent Telegram from retrying
         return {"ok": True}
 
+
 async def process_telegram_update(update: dict):
     """
-    Processes Telegram updates manually through Pyrogram
+    Processes Telegram updates using Pyrogram's built-in system
     """
     try:
-        # Import raw types for manual update processing
-        from pyrogram.raw.types import UpdateNewMessage, UpdateEditMessage, UpdateBotCallbackQuery
         from pyrogram import types
+        from pyrogram.raw.all import types as raw_types
         
-        # Check if update contains a message
+        # ✅ Handle MESSAGE updates
         if "message" in update:
             message_data = update["message"]
-            # Create a Pyrogram Message object from the raw data
-            message = types.Message._parse(bot_instance, message_data, {}, {})
+            message = types.Message._parse(
+                bot_instance, 
+                message_data, 
+                users={}, 
+                chats={}
+            )
             
-            # Trigger all registered message handlers
-            for handler_group in bot_instance.dispatcher.groups.values():
-                for handler in handler_group:
-                    if isinstance(handler, type(bot_instance.dispatcher.groups[0][0])):
-                        try:
+            # ✅ Use Pyrogram's dispatcher to handle the message
+            # This will automatically trigger all registered handlers from plugins
+            for group in sorted(bot_instance.dispatcher.groups.keys()):
+                handlers = bot_instance.dispatcher.groups[group]
+                
+                for handler in handlers:
+                    try:
+                        # Check if handler accepts this message
+                        if await handler.check(bot_instance, message):
                             await handler.callback(bot_instance, message)
-                        except Exception as e:
-                            logging.error(f"Handler error: {e}")
+                            break  # Stop after first matching handler in group
+                    except StopPropagation:
+                        break
+                    except ContinuePropagation:
+                        continue
+                    except Exception as e:
+                        logging.error(f"Handler error: {e}")
+                        continue
         
-        # Handle edited messages
+        # ✅ Handle EDITED MESSAGE updates
         elif "edited_message" in update:
             message_data = update["edited_message"]
-            message = types.Message._parse(bot_instance, message_data, {}, {})
+            message = types.Message._parse(
+                bot_instance, 
+                message_data, 
+                users={}, 
+                chats={}
+            )
             
-            for handler_group in bot_instance.dispatcher.groups.values():
-                for handler in handler_group:
+            for group in sorted(bot_instance.dispatcher.groups.keys()):
+                handlers = bot_instance.dispatcher.groups[group]
+                
+                for handler in handlers:
                     try:
-                        await handler.callback(bot_instance, message)
+                        if await handler.check(bot_instance, message):
+                            await handler.callback(bot_instance, message)
+                            break
                     except Exception as e:
                         logging.error(f"Handler error: {e}")
+                        continue
         
-        # Handle callback queries (button presses)
+        # ✅ Handle CALLBACK QUERY updates (buttons)
         elif "callback_query" in update:
             callback_data = update["callback_query"]
-            callback = types.CallbackQuery._parse(bot_instance, callback_data, {})
+            callback = types.CallbackQuery._parse(
+                bot_instance, 
+                callback_data, 
+                users={}
+            )
             
-            for handler_group in bot_instance.dispatcher.groups.values():
-                for handler in handler_group:
+            for group in sorted(bot_instance.dispatcher.groups.keys()):
+                handlers = bot_instance.dispatcher.groups[group]
+                
+                for handler in handlers:
                     try:
-                        await handler.callback(bot_instance, callback)
+                        if await handler.check(bot_instance, callback):
+                            await handler.callback(bot_instance, callback)
+                            break
                     except Exception as e:
                         logging.error(f"Handler error: {e}")
+                        continue
                         
     except Exception as e:
-        logging.error(f"Error in process_telegram_update: {e}")
+        logging.error(f"Error in process_telegram_update: {e}", exc_info=True)
+
 
 # =============================
 # Telegram Bot Class
@@ -150,33 +201,42 @@ class MN_Bot(Client):
 async def setup_webhook(bot: MN_Bot, webhook_url: str):
     """
     Configures Telegram webhook
-    webhook_url should be: https://your-domain.com/webhook/{BOT.TOKEN}
     """
     try:
-        from pyrogram.raw import functions
-        
-        # Delete any existing webhook first
-        await bot.invoke(
-            functions.bots.DeleteBotCommands(
-                scope=types.BotCommandScopeDefault(),
-                lang_code=""
-            )
-        )
-        
-        # Use Telegram Bot API to set webhook
         import httpx
+        
+        # Delete webhook first and drop pending updates
         async with httpx.AsyncClient() as client:
-            response = await client.post(
+            # ✅ Clear old webhook and pending updates
+            delete_response = await client.post(
+                f"https://api.telegram.org/bot{BOT.TOKEN}/deleteWebhook",
+                json={"drop_pending_updates": True}
+            )
+            logging.info(f"Old webhook deleted: {delete_response.json()}")
+            
+            # Wait a bit for Telegram to process
+            await asyncio.sleep(2)
+            
+            # ✅ Set new webhook
+            set_response = await client.post(
                 f"https://api.telegram.org/bot{BOT.TOKEN}/setWebhook",
                 json={
                     "url": webhook_url,
                     "allowed_updates": ["message", "edited_message", "callback_query"],
-                    "drop_pending_updates": True  # Clear any pending updates
+                    "drop_pending_updates": True,  # Ignore old updates
+                    "max_connections": 40  # Default
                 }
             )
-            result = response.json()
+            result = set_response.json()
+            
             if result.get("ok"):
                 logging.info(f"✅ Webhook set successfully: {webhook_url}")
+                
+                # ✅ Verify webhook info
+                info_response = await client.get(
+                    f"https://api.telegram.org/bot{BOT.TOKEN}/getWebhookInfo"
+                )
+                logging.info(f"📡 Webhook info: {info_response.json()}")
             else:
                 logging.error(f"❌ Failed to set webhook: {result}")
                 
@@ -191,11 +251,11 @@ async def main():
     global bot_instance
     
     # Get webhook URL from environment variable
-    WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # e.g., https://your-app.render.com/webhook/{BOT.TOKEN}
+    WEBHOOK_URL = os.getenv("WEBHOOK_URL")  
     
     if not WEBHOOK_URL:
         logging.error("❌ WEBHOOK_URL environment variable not set!")
-        logging.info("Please set WEBHOOK_URL=https://your-domain.com/webhook/{BOT.TOKEN}")
+        logging.info("Example: WEBHOOK_URL=https://your-domain.com/webhook/{YOUR_BOT_TOKEN}")
         return
 
     bot_instance = MN_Bot()
