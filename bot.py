@@ -20,8 +20,9 @@ app = FastAPI()
 
 # Global bot instance and update tracker
 bot_instance = None
-processed_updates = set()  # Track processed update IDs
-MAX_UPDATE_CACHE = 1000  # Prevent memory overflow
+bot_ready = asyncio.Event()  # ✅ Add ready flag
+processed_updates = set()
+MAX_UPDATE_CACHE = 1000
 
 @app.get("/")
 async def root():
@@ -29,46 +30,56 @@ async def root():
 
 @app.get("/health")
 async def health():
-    return {"status": "healthy"}
+    return {"status": "healthy", "bot_ready": bot_ready.is_set()}
 
 # =============================
 # Webhook Endpoint
 # =============================
-@app.post(f"/webhook/{BOT.TOKEN}")
-async def webhook_handler(request: Request):
+@app.post(f"/webhook/{{bot_token}}")  # ✅ Use path parameter
+async def webhook_handler(bot_token: str, request: Request):
     """
     Telegram webhook endpoint - receives updates from Telegram
     """
+    # ✅ Verify bot token
+    if bot_token != BOT.TOKEN:
+        raise HTTPException(status_code=404, detail="Not found")
+    
+    # ✅ Wait for bot to be ready (max 30 seconds)
+    try:
+        await asyncio.wait_for(bot_ready.wait(), timeout=30.0)
+    except asyncio.TimeoutError:
+        logging.error("Bot initialization timeout")
+        raise HTTPException(status_code=503, detail="Bot not ready")
+    
     if bot_instance is None:
+        logging.error("Bot instance is None after ready flag set")
         raise HTTPException(status_code=503, detail="Bot not initialized")
     
     try:
         update = await request.json()
         
-        # ✅ CRITICAL: Check for duplicate update_id
+        # Check for duplicate update_id
         update_id = update.get("update_id")
         if update_id in processed_updates:
             logging.info(f"⚠️ Duplicate update {update_id} ignored")
-            return {"ok": True}  # Return 200 OK immediately
+            return {"ok": True}
         
         # Track this update
         processed_updates.add(update_id)
         
-        # Manage cache size to prevent memory overflow
+        # Manage cache size
         if len(processed_updates) > MAX_UPDATE_CACHE:
-            # Remove oldest half
             processed_updates.clear()
             logging.info("🔄 Update cache cleared")
         
-        # ✅ IMPORTANT: Return 200 OK IMMEDIATELY, then process in background
+        # Process in background
         asyncio.create_task(process_telegram_update(update))
         
         return {"ok": True}
     
     except Exception as e:
-        logging.error(f"Error in webhook_handler: {e}")
-        # Still return 200 to prevent Telegram from retrying
-        return {"ok": True}
+        logging.error(f"Error in webhook_handler: {e}", exc_info=True)
+        return {"ok": True}  # Still return 200
 
 
 async def process_telegram_update(update: dict):
@@ -76,10 +87,9 @@ async def process_telegram_update(update: dict):
     Processes Telegram updates using Pyrogram's built-in system
     """
     try:
-        # ✅ CORRECT IMPORT - Remove the problematic import
         from pyrogram import types
         
-        # ✅ Handle MESSAGE updates
+        # Handle MESSAGE updates
         if "message" in update:
             message_data = update["message"]
             message = types.Message._parse(
@@ -89,22 +99,20 @@ async def process_telegram_update(update: dict):
                 chats={}
             )
             
-            # ✅ Use Pyrogram's dispatcher to handle the message
-            # This will automatically trigger all registered handlers from plugins
+            # Use Pyrogram's dispatcher
             for group in sorted(bot_instance.dispatcher.groups.keys()):
                 handlers = bot_instance.dispatcher.groups[group]
                 
                 for handler in handlers:
                     try:
-                        # Check if handler accepts this message
                         if await handler.check(bot_instance, message):
                             await handler.callback(bot_instance, message)
-                            break  # Stop after first matching handler in group
+                            break
                     except Exception as e:
-                        logging.error(f"Handler error: {e}")
+                        logging.error(f"Handler error: {e}", exc_info=True)
                         continue
         
-        # ✅ Handle EDITED MESSAGE updates
+        # Handle EDITED MESSAGE updates
         elif "edited_message" in update:
             message_data = update["edited_message"]
             message = types.Message._parse(
@@ -123,10 +131,10 @@ async def process_telegram_update(update: dict):
                             await handler.callback(bot_instance, message)
                             break
                     except Exception as e:
-                        logging.error(f"Handler error: {e}")
+                        logging.error(f"Handler error: {e}", exc_info=True)
                         continue
         
-        # ✅ Handle CALLBACK QUERY updates (buttons)
+        # Handle CALLBACK QUERY updates
         elif "callback_query" in update:
             callback_data = update["callback_query"]
             callback = types.CallbackQuery._parse(
@@ -144,7 +152,7 @@ async def process_telegram_update(update: dict):
                             await handler.callback(bot_instance, callback)
                             break
                     except Exception as e:
-                        logging.error(f"Handler error: {e}")
+                        logging.error(f"Handler error: {e}", exc_info=True)
                         continue
                         
     except Exception as e:
@@ -161,7 +169,7 @@ class MN_Bot(Client):
             api_id=API.ID,
             api_hash=API.HASH,
             bot_token=BOT.TOKEN,
-            plugins=dict(root="plugins"),  # Auto-load all handlers
+            plugins=dict(root="plugins"),
             workers=16,
         )
 
@@ -175,13 +183,13 @@ class MN_Bot(Client):
         try:
             await self.send_message(
                 chat_id=OWNER.ID,
-                text=f"{me.first_name} ✅✅ BOT started successfully ✅✅"
+                text=f"✅ {me.first_name} BOT started successfully ✅✅"
             )
         except FloodWait as e:
             await asyncio.sleep(e.value)
             await self.send_message(
                 chat_id=OWNER.ID,
-                text=f"{me.first_name} ✅✅ BOT started successfully ✅✅"
+                text=f"✅ {me.first_name} BOT started successfully ✅✅"
             )
 
         logging.info(f"✅ {me.first_name} BOT started successfully")
@@ -201,26 +209,24 @@ async def setup_webhook(bot: MN_Bot, webhook_url: str):
     try:
         import httpx
         
-        # Delete webhook first and drop pending updates
         async with httpx.AsyncClient() as client:
-            # ✅ Clear old webhook and pending updates
+            # Clear old webhook
             delete_response = await client.post(
                 f"https://api.telegram.org/bot{BOT.TOKEN}/deleteWebhook",
                 json={"drop_pending_updates": True}
             )
             logging.info(f"Old webhook deleted: {delete_response.json()}")
             
-            # Wait a bit for Telegram to process
             await asyncio.sleep(2)
             
-            # ✅ Set new webhook
+            # Set new webhook
             set_response = await client.post(
                 f"https://api.telegram.org/bot{BOT.TOKEN}/setWebhook",
                 json={
                     "url": webhook_url,
                     "allowed_updates": ["message", "edited_message", "callback_query"],
-                    "drop_pending_updates": True,  # Ignore old updates
-                    "max_connections": 40  # Default
+                    "drop_pending_updates": True,
+                    "max_connections": 40
                 }
             )
             result = set_response.json()
@@ -228,7 +234,6 @@ async def setup_webhook(bot: MN_Bot, webhook_url: str):
             if result.get("ok"):
                 logging.info(f"✅ Webhook set successfully: {webhook_url}")
                 
-                # ✅ Verify webhook info
                 info_response = await client.get(
                     f"https://api.telegram.org/bot{BOT.TOKEN}/getWebhookInfo"
                 )
@@ -241,44 +246,64 @@ async def setup_webhook(bot: MN_Bot, webhook_url: str):
 
 
 # =============================
-# Main Runner
+# Startup Event
 # =============================
-async def main():
+@app.on_event("startup")
+async def startup_event():
+    """Initialize bot on FastAPI startup"""
     global bot_instance
     
-    WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-    PORT = int(os.getenv("PORT", 8000))  # ✅ Dynamic port
+    logging.info("🚀 Starting bot initialization...")
     
-    if not WEBHOOK_URL:
-        logging.error("❌ WEBHOOK_URL environment variable not set!")
-        return
-
-    bot_instance = MN_Bot()
-    await bot_instance.start()
-    await setup_webhook(bot_instance, WEBHOOK_URL)
-
-    # ✅ Use dynamic port
-    config = uvicorn.Config(
-        app,
-        host="0.0.0.0",
-        port=PORT,
-        loop="asyncio",
-        log_level="info"
-    )
-    server = uvicorn.Server(config)
-
     try:
-        logging.info(f"🚀 BOT running on port {PORT}...")
-        await server.serve()
-    except (KeyboardInterrupt, SystemExit):
-        logging.info("⚠ Shutdown signal received...")
-    finally:
-        await bot_instance.stop()
+        WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+        
+        if not WEBHOOK_URL:
+            logging.error("❌ WEBHOOK_URL environment variable not set!")
+            return
+        
+        # Initialize bot
+        bot_instance = MN_Bot()
+        await bot_instance.start()
+        
+        # Setup webhook
+        await setup_webhook(bot_instance, WEBHOOK_URL)
+        
+        # ✅ Set ready flag
+        bot_ready.set()
+        logging.info("✅ Bot fully initialized and ready!")
+        
+    except Exception as e:
+        logging.error(f"❌ Bot initialization failed: {e}", exc_info=True)
 
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Cleanup on shutdown"""
+    global bot_instance
+    
+    if bot_instance:
+        try:
+            await bot_instance.stop()
+            logging.info("🚫 Bot stopped gracefully")
+        except Exception as e:
+            logging.error(f"Error stopping bot: {e}")
 
 
 # =============================
-# Entry Point
+# Main Entry Point (Alternative)
 # =============================
 if __name__ == "__main__":
-    asyncio.run(main())
+    import uvicorn
+    
+    PORT = int(os.getenv("PORT", 8000))
+    
+    logging.info(f"🚀 Starting server on port {PORT}...")
+    
+    uvicorn.run(
+        "bot:app",
+        host="0.0.0.0",
+        port=PORT,
+        log_level="info",
+        access_log=True
+    )
