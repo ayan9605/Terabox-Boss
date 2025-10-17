@@ -76,8 +76,8 @@ async def process_telegram_update(update: dict):
     Processes Telegram updates using Pyrogram's built-in system
     """
     try:
+        # ✅ CORRECT IMPORT - Remove the problematic import
         from pyrogram import types
-        from pyrogram.raw.all import types as raw_types
         
         # ✅ Handle MESSAGE updates
         if "message" in update:
@@ -100,10 +100,6 @@ async def process_telegram_update(update: dict):
                         if await handler.check(bot_instance, message):
                             await handler.callback(bot_instance, message)
                             break  # Stop after first matching handler in group
-                    except StopPropagation:
-                        break
-                    except ContinuePropagation:
-                        continue
                     except Exception as e:
                         logging.error(f"Handler error: {e}")
                         continue
