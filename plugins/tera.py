@@ -8,6 +8,7 @@ import aiofiles
 from pyrogram import Client 
 from pyrogram import filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
+from pyrogram.errors import PeerIdInvalid
 from verify_patch import IS_VERIFY, is_verified, build_verification_link, HOW_TO_VERIFY
 from pymongo import MongoClient
 from config import CHANNEL, DATABASE
@@ -122,14 +123,11 @@ def calculate_speed(downloaded: int, elapsed_time: float) -> str:
 
 
 async def download_file_fast(url: str, temp_path: str, status_msg, info: dict):
-    """
-    ✅ OPTIMIZED: Fast async download with aiohttp
-    """
+    """Fast async download with aiohttp"""
     start_time = time.time()
     last_update_time = start_time
     downloaded = 0
     
-    # ✅ Optimized connection settings
     connector = aiohttp.TCPConnector(
         limit=10,
         limit_per_host=4,
@@ -143,8 +141,7 @@ async def download_file_fast(url: str, temp_path: str, status_msg, info: dict):
         async with session.get(url) as response:
             total_size = int(response.headers.get('content-length', 0))
             
-            # ✅ OPTIMIZED: 10MB chunks for maximum speed
-            chunk_size = 10 * 1024 * 1024
+            chunk_size = 10 * 1024 * 1024  # 10MB chunks
             
             async with aiofiles.open(temp_path, 'wb') as f:
                 async for chunk in response.content.iter_chunked(chunk_size):
@@ -186,6 +183,14 @@ async def download_file_fast(url: str, temp_path: str, status_msg, info: dict):
 @Client.on_message(filters.private & filters.regex(TERABOX_REGEX))
 async def handle_terabox(client, message: Message):
     user_id = message.from_user.id
+    chat_id = message.chat.id
+
+    # ✅ CRITICAL FIX: Resolve peer first to avoid PeerIdInvalid
+    try:
+        # This ensures the bot has the user in its session cache
+        await client.resolve_peer(user_id)
+    except Exception as e:
+        print(f"Warning: Could not resolve peer {user_id}: {e}")
 
     if IS_VERIFY and not await is_verified(user_id):
         verify_url = await build_verification_link(client.me.username, user_id)
@@ -218,7 +223,7 @@ async def handle_terabox(client, message: Message):
     file_type = detect_file_type(info["name"])
 
     try:
-        # ✅ Use optimized async download
+        # Download file
         await download_file_fast(info["download_link"], temp_path, status_msg, info)
 
         await status_msg.edit("📤 **Uploading to Telegram...**")
@@ -227,38 +232,48 @@ async def handle_terabox(client, message: Message):
             f"📄 **File Name:** `{info['name']}`\n"
             f"📦 **File Size:** {info['size_str']}\n"
             f"🔗 **Source:** [TeraBox Link]({url})\n\n"
-            f"⚡ Powered by @A.Sayyad"
+            f"⚡ Powered by @MrMNTG"
         )
         
         cancel_button = InlineKeyboardMarkup([
             [InlineKeyboardButton("❌ CANCEL", callback_data="cancel_upload")]
         ])
 
+        # ✅ Upload to channel if configured (with peer resolution)
         if CHANNEL.ID:
-            if file_type == 'video':
-                await client.send_video(
-                    chat_id=CHANNEL.ID,
-                    video=temp_path,
-                    caption=caption,
-                    file_name=info["name"],
-                    has_spoiler=True,
-                    supports_streaming=True
-                )
-            elif file_type == 'photo':
-                await client.send_photo(
-                    chat_id=CHANNEL.ID,
-                    photo=temp_path,
-                    caption=caption,
-                    has_spoiler=True
-                )
-            else:
-                await client.send_document(
-                    chat_id=CHANNEL.ID,
-                    document=temp_path,
-                    caption=caption,
-                    file_name=info["name"]
-                )
+            try:
+                # Resolve channel peer first
+                await client.resolve_peer(CHANNEL.ID)
+                
+                if file_type == 'video':
+                    await client.send_video(
+                        chat_id=CHANNEL.ID,
+                        video=temp_path,
+                        caption=caption,
+                        file_name=info["name"],
+                        has_spoiler=True,
+                        supports_streaming=True
+                    )
+                elif file_type == 'photo':
+                    await client.send_photo(
+                        chat_id=CHANNEL.ID,
+                        photo=temp_path,
+                        caption=caption,
+                        has_spoiler=True
+                    )
+                else:
+                    await client.send_document(
+                        chat_id=CHANNEL.ID,
+                        document=temp_path,
+                        caption=caption,
+                        file_name=info["name"]
+                    )
+            except PeerIdInvalid:
+                print(f"Warning: Could not send to channel {CHANNEL.ID} - PeerIdInvalid")
+            except Exception as e:
+                print(f"Warning: Channel upload failed: {e}")
 
+        # Upload progress tracking
         upload_start = time.time()
         last_upload_update = upload_start
         
@@ -300,51 +315,69 @@ async def handle_terabox(client, message: Message):
             except:
                 pass
 
-        if file_type == 'video':
-            sent_msg = await client.send_video(
-                chat_id=message.chat.id,
-                video=temp_path,
-                caption=caption,
-                file_name=info["name"],
-                protect_content=True,
-                has_spoiler=True,
-                supports_streaming=True,
-                progress=upload_progress
-            )
-        elif file_type == 'photo':
-            sent_msg = await client.send_photo(
-                chat_id=message.chat.id,
-                photo=temp_path,
-                caption=caption,
-                protect_content=True,
-                has_spoiler=True,
-                progress=upload_progress
-            )
-        else:
-            sent_msg = await client.send_document(
-                chat_id=message.chat.id,
-                document=temp_path,
-                caption=caption,
-                file_name=info["name"],
-                protect_content=True,
-                progress=upload_progress
-            )
-
-        await status_msg.edit(
-            f"✅ **File uploaded successfully as {file_type.upper()}!**\n\n"
-            "⏰ Will be auto-deleted in 12 hours."
-        )
-        
-        await asyncio.sleep(43200)
+        # ✅ Upload to user with proper peer resolution
         try:
-            await sent_msg.delete()
-            await status_msg.delete()
-        except Exception:
-            pass
+            # Ensure peer is resolved before upload
+            await client.resolve_peer(chat_id)
+            
+            if file_type == 'video':
+                sent_msg = await client.send_video(
+                    chat_id=chat_id,
+                    video=temp_path,
+                    caption=caption,
+                    file_name=info["name"],
+                    protect_content=True,
+                    has_spoiler=True,
+                    supports_streaming=True,
+                    progress=upload_progress
+                )
+            elif file_type == 'photo':
+                sent_msg = await client.send_photo(
+                    chat_id=chat_id,
+                    photo=temp_path,
+                    caption=caption,
+                    protect_content=True,
+                    has_spoiler=True,
+                    progress=upload_progress
+                )
+            else:
+                sent_msg = await client.send_document(
+                    chat_id=chat_id,
+                    document=temp_path,
+                    caption=caption,
+                    file_name=info["name"],
+                    protect_content=True,
+                    progress=upload_progress
+                )
+
+            await status_msg.edit(
+                f"✅ **File uploaded successfully as {file_type.upper()}!**\n\n"
+                "⏰ Will be auto-deleted in 12 hours."
+            )
+            
+            # Auto-delete after 12 hours
+            await asyncio.sleep(43200)
+            try:
+                await sent_msg.delete()
+                await status_msg.delete()
+            except Exception:
+                pass
+                
+        except PeerIdInvalid as e:
+            await status_msg.edit(
+                f"❌ **Upload failed: PeerIdInvalid**\n\n"
+                f"This usually happens on first use. Please:\n"
+                f"1. Send /start to the bot\n"
+                f"2. Try again\n\n"
+                f"Error: `{str(e)}`"
+            )
+        except Exception as e:
+            await status_msg.edit(f"❌ **Upload failed:**\n`{str(e)}`")
 
     except Exception as e:
         await status_msg.edit(f"❌ **Error:**\n`{str(e)}`")
     finally:
+        # Cleanup
         if os.path.exists(temp_path):
             try:
                 os.remove(temp_path)
