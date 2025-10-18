@@ -58,51 +58,84 @@ async def process_telegram_update(update: dict):
     Processes Telegram updates manually through Pyrogram
     """
     try:
-        # Import raw types for manual update processing
-        from pyrogram.raw.types import UpdateNewMessage, UpdateEditMessage, UpdateBotCallbackQuery
         from pyrogram import types
+        from pyrogram.handlers import MessageHandler, CallbackQueryHandler
         
-        # Check if update contains a message
+        # Handle regular messages
         if "message" in update:
             message_data = update["message"]
-            # Create a Pyrogram Message object from the raw data
             message = types.Message._parse(bot_instance, message_data, {}, {})
             
-            # Trigger all registered message handlers
-            for handler_group in bot_instance.dispatcher.groups.values():
-                for handler in handler_group:
-                    if isinstance(handler, type(bot_instance.dispatcher.groups[0][0])):
+            # Iterate through all handler groups
+            for group in sorted(bot_instance.dispatcher.groups.keys()):
+                for handler in bot_instance.dispatcher.groups[group]:
+                    if isinstance(handler, MessageHandler):
                         try:
+                            # Check filters - they can be async coroutines
+                            if handler.filters:
+                                if asyncio.iscoroutinefunction(handler.filters):
+                                    filter_result = await handler.filters(bot_instance, message)
+                                else:
+                                    # Call filter if it's callable
+                                    filter_result = await handler.filters(bot_instance, message) if callable(handler.filters) else True
+                                
+                                if not filter_result:
+                                    continue
+                            
+                            # Call the handler callback
                             await handler.callback(bot_instance, message)
+                            
                         except Exception as e:
-                            logging.error(f"Handler error: {e}")
+                            logging.error(f"Handler error: {e}", exc_info=True)
         
         # Handle edited messages
         elif "edited_message" in update:
             message_data = update["edited_message"]
             message = types.Message._parse(bot_instance, message_data, {}, {})
             
-            for handler_group in bot_instance.dispatcher.groups.values():
-                for handler in handler_group:
-                    try:
-                        await handler.callback(bot_instance, message)
-                    except Exception as e:
-                        logging.error(f"Handler error: {e}")
+            for group in sorted(bot_instance.dispatcher.groups.keys()):
+                for handler in bot_instance.dispatcher.groups[group]:
+                    if isinstance(handler, MessageHandler):
+                        try:
+                            if handler.filters:
+                                if asyncio.iscoroutinefunction(handler.filters):
+                                    filter_result = await handler.filters(bot_instance, message)
+                                else:
+                                    filter_result = await handler.filters(bot_instance, message) if callable(handler.filters) else True
+                                
+                                if not filter_result:
+                                    continue
+                            
+                            await handler.callback(bot_instance, message)
+                            
+                        except Exception as e:
+                            logging.error(f"Handler error: {e}", exc_info=True)
         
         # Handle callback queries (button presses)
         elif "callback_query" in update:
             callback_data = update["callback_query"]
             callback = types.CallbackQuery._parse(bot_instance, callback_data, {})
             
-            for handler_group in bot_instance.dispatcher.groups.values():
-                for handler in handler_group:
-                    try:
-                        await handler.callback(bot_instance, callback)
-                    except Exception as e:
-                        logging.error(f"Handler error: {e}")
+            for group in sorted(bot_instance.dispatcher.groups.keys()):
+                for handler in bot_instance.dispatcher.groups[group]:
+                    if isinstance(handler, CallbackQueryHandler):
+                        try:
+                            if handler.filters:
+                                if asyncio.iscoroutinefunction(handler.filters):
+                                    filter_result = await handler.filters(bot_instance, callback)
+                                else:
+                                    filter_result = await handler.filters(bot_instance, callback) if callable(handler.filters) else True
+                                
+                                if not filter_result:
+                                    continue
+                            
+                            await handler.callback(bot_instance, callback)
+                            
+                        except Exception as e:
+                            logging.error(f"Handler error: {e}", exc_info=True)
                         
     except Exception as e:
-        logging.error(f"Error in process_telegram_update: {e}")
+        logging.error(f"Error in process_telegram_update: {e}", exc_info=True)
 
 # =============================
 # Telegram Bot Class
@@ -153,16 +186,6 @@ async def setup_webhook(bot: MN_Bot, webhook_url: str):
     webhook_url should be: https://your-domain.com/webhook/{BOT.TOKEN}
     """
     try:
-        from pyrogram.raw import functions
-        
-        # Delete any existing webhook first
-        await bot.invoke(
-            functions.bots.DeleteBotCommands(
-                scope=types.BotCommandScopeDefault(),
-                lang_code=""
-            )
-        )
-        
         # Use Telegram Bot API to set webhook
         import httpx
         async with httpx.AsyncClient() as client:
