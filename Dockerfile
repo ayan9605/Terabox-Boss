@@ -1,17 +1,20 @@
 FROM python:3.10-slim
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    chromium chromium-driver \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
-
-ENV CHROME_BIN=/usr/bin/chromium
-
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY . /app
+# Set working directory first
 WORKDIR /app
 
+# Copy only requirements first for better caching
+COPY requirements.txt .
+
+# Install Python dependencies (no cache to reduce image size)
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY . .
+
+# Run as non-root user for security
+RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
+USER appuser
+
+# Command to run the bot
 CMD ["python", "bot.py"]
