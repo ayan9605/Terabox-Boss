@@ -1,25 +1,22 @@
+# Core dependencies
 fastapi
-aiohttp
-pymongo[srv]==3.12.3  
-motor==2.5.1 
-marshmallow==3.20.1
-umongo==3.0.1
-pyrotgfork
-python-dotenv
-TgCrypto
-feedparser
-Flask
-cloudscraper
-requests
-beautifulsoup4
-lxml
-torrent-parser
-bencodepy
-certifi
-urllib3
-setuptools
-selenium>=4.0.0
-webdriver-manager
-terabox-downloader
 uvicorn
 httpx
+
+# Telegram bot
+pyrotgfork
+TgCrypto
+
+# Database
+pymongo
+motor==2.5.1
+
+# Web scraping & HTTP
+aiohttp
+requests
+cloudscraper
+beautifulsoup4
+lxml
+
+# Environment
+python-dotenv
