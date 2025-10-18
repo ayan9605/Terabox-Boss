@@ -55,7 +55,7 @@ async def webhook_handler(request: Request):
 
 async def process_telegram_update(update: dict):
     """
-    Processes Telegram updates manually through Pyrogram
+    Processes Telegram updates from Bot API format to Pyrogram handlers
     """
     try:
         from pyrogram import types
@@ -63,9 +63,41 @@ async def process_telegram_update(update: dict):
         
         # Handle regular messages
         if "message" in update:
-            message_data = update["message"]
-            # ✅ FIX: Await the _parse method since it returns a coroutine
-            message = await types.Message._parse(bot_instance, message_data, {}, {})
+            # Convert Bot API JSON to Pyrogram Message object using high-level parsing
+            # Don't use _parse - instead reconstruct the Message from dict
+            message_dict = update["message"]
+            
+            # Create a fake Update object that Pyrogram can process
+            # Use Pyrogram's internal parsing by passing through the client
+            message = types.Message._parse(
+                client=bot_instance,
+                message=message_dict,
+                users={message_dict.get("from", {}).get("id"): types.User(
+                    id=message_dict.get("from", {}).get("id"),
+                    is_self=False,
+                    is_contact=False,
+                    is_mutual_contact=False,
+                    is_deleted=False,
+                    is_bot=message_dict.get("from", {}).get("is_bot", False),
+                    is_verified=False,
+                    is_restricted=False,
+                    is_scam=False,
+                    is_fake=False,
+                    is_support=False,
+                    first_name=message_dict.get("from", {}).get("first_name", ""),
+                    last_name=message_dict.get("from", {}).get("last_name"),
+                    username=message_dict.get("from", {}).get("username"),
+                    language_code=message_dict.get("from", {}).get("language_code"),
+                )} if message_dict.get("from") else {},
+                chats={message_dict.get("chat", {}).get("id"): types.Chat(
+                    id=message_dict.get("chat", {}).get("id"),
+                    type=message_dict.get("chat", {}).get("type"),
+                    title=message_dict.get("chat", {}).get("title"),
+                    username=message_dict.get("chat", {}).get("username"),
+                    first_name=message_dict.get("chat", {}).get("first_name"),
+                    last_name=message_dict.get("chat", {}).get("last_name"),
+                )} if message_dict.get("chat") else {}
+            )
             
             # Iterate through all handler groups
             for group in sorted(bot_instance.dispatcher.groups.keys()):
@@ -77,7 +109,6 @@ async def process_telegram_update(update: dict):
                                 if asyncio.iscoroutinefunction(handler.filters):
                                     filter_result = await handler.filters(bot_instance, message)
                                 elif callable(handler.filters):
-                                    # Some filters return coroutines when called
                                     filter_check = handler.filters(bot_instance, message)
                                     if asyncio.iscoroutine(filter_check):
                                         filter_result = await filter_check
@@ -97,9 +128,37 @@ async def process_telegram_update(update: dict):
         
         # Handle edited messages
         elif "edited_message" in update:
-            message_data = update["edited_message"]
-            # ✅ FIX: Await the _parse method since it returns a coroutine
-            message = await types.Message._parse(bot_instance, message_data, {}, {})
+            message_dict = update["edited_message"]
+            
+            message = types.Message._parse(
+                client=bot_instance,
+                message=message_dict,
+                users={message_dict.get("from", {}).get("id"): types.User(
+                    id=message_dict.get("from", {}).get("id"),
+                    is_self=False,
+                    is_contact=False,
+                    is_mutual_contact=False,
+                    is_deleted=False,
+                    is_bot=message_dict.get("from", {}).get("is_bot", False),
+                    is_verified=False,
+                    is_restricted=False,
+                    is_scam=False,
+                    is_fake=False,
+                    is_support=False,
+                    first_name=message_dict.get("from", {}).get("first_name", ""),
+                    last_name=message_dict.get("from", {}).get("last_name"),
+                    username=message_dict.get("from", {}).get("username"),
+                    language_code=message_dict.get("from", {}).get("language_code"),
+                )} if message_dict.get("from") else {},
+                chats={message_dict.get("chat", {}).get("id"): types.Chat(
+                    id=message_dict.get("chat", {}).get("id"),
+                    type=message_dict.get("chat", {}).get("type"),
+                    title=message_dict.get("chat", {}).get("title"),
+                    username=message_dict.get("chat", {}).get("username"),
+                    first_name=message_dict.get("chat", {}).get("first_name"),
+                    last_name=message_dict.get("chat", {}).get("last_name"),
+                )} if message_dict.get("chat") else {}
+            )
             
             for group in sorted(bot_instance.dispatcher.groups.keys()):
                 for handler in bot_instance.dispatcher.groups[group]:
@@ -127,9 +186,30 @@ async def process_telegram_update(update: dict):
         
         # Handle callback queries (button presses)
         elif "callback_query" in update:
-            callback_data = update["callback_query"]
-            # ✅ FIX: Await the _parse method since it returns a coroutine
-            callback = await types.CallbackQuery._parse(bot_instance, callback_data, {})
+            callback_dict = update["callback_query"]
+            
+            # Parse callback query
+            callback = types.CallbackQuery._parse(
+                client=bot_instance,
+                callback_query=callback_dict,
+                users={callback_dict.get("from", {}).get("id"): types.User(
+                    id=callback_dict.get("from", {}).get("id"),
+                    is_self=False,
+                    is_contact=False,
+                    is_mutual_contact=False,
+                    is_deleted=False,
+                    is_bot=callback_dict.get("from", {}).get("is_bot", False),
+                    is_verified=False,
+                    is_restricted=False,
+                    is_scam=False,
+                    is_fake=False,
+                    is_support=False,
+                    first_name=callback_dict.get("from", {}).get("first_name", ""),
+                    last_name=callback_dict.get("from", {}).get("last_name"),
+                    username=callback_dict.get("from", {}).get("username"),
+                    language_code=callback_dict.get("from", {}).get("language_code"),
+                )} if callback_dict.get("from") else {}
+            )
             
             for group in sorted(bot_instance.dispatcher.groups.keys()):
                 for handler in bot_instance.dispatcher.groups[group]:
