@@ -64,7 +64,8 @@ async def process_telegram_update(update: dict):
         # Handle regular messages
         if "message" in update:
             message_data = update["message"]
-            message = types.Message._parse(bot_instance, message_data, {}, {})
+            # ✅ FIX: Await the _parse method since it returns a coroutine
+            message = await types.Message._parse(bot_instance, message_data, {}, {})
             
             # Iterate through all handler groups
             for group in sorted(bot_instance.dispatcher.groups.keys()):
@@ -75,9 +76,15 @@ async def process_telegram_update(update: dict):
                             if handler.filters:
                                 if asyncio.iscoroutinefunction(handler.filters):
                                     filter_result = await handler.filters(bot_instance, message)
+                                elif callable(handler.filters):
+                                    # Some filters return coroutines when called
+                                    filter_check = handler.filters(bot_instance, message)
+                                    if asyncio.iscoroutine(filter_check):
+                                        filter_result = await filter_check
+                                    else:
+                                        filter_result = filter_check
                                 else:
-                                    # Call filter if it's callable
-                                    filter_result = await handler.filters(bot_instance, message) if callable(handler.filters) else True
+                                    filter_result = True
                                 
                                 if not filter_result:
                                     continue
@@ -91,7 +98,8 @@ async def process_telegram_update(update: dict):
         # Handle edited messages
         elif "edited_message" in update:
             message_data = update["edited_message"]
-            message = types.Message._parse(bot_instance, message_data, {}, {})
+            # ✅ FIX: Await the _parse method since it returns a coroutine
+            message = await types.Message._parse(bot_instance, message_data, {}, {})
             
             for group in sorted(bot_instance.dispatcher.groups.keys()):
                 for handler in bot_instance.dispatcher.groups[group]:
@@ -100,8 +108,14 @@ async def process_telegram_update(update: dict):
                             if handler.filters:
                                 if asyncio.iscoroutinefunction(handler.filters):
                                     filter_result = await handler.filters(bot_instance, message)
+                                elif callable(handler.filters):
+                                    filter_check = handler.filters(bot_instance, message)
+                                    if asyncio.iscoroutine(filter_check):
+                                        filter_result = await filter_check
+                                    else:
+                                        filter_result = filter_check
                                 else:
-                                    filter_result = await handler.filters(bot_instance, message) if callable(handler.filters) else True
+                                    filter_result = True
                                 
                                 if not filter_result:
                                     continue
@@ -114,7 +128,8 @@ async def process_telegram_update(update: dict):
         # Handle callback queries (button presses)
         elif "callback_query" in update:
             callback_data = update["callback_query"]
-            callback = types.CallbackQuery._parse(bot_instance, callback_data, {})
+            # ✅ FIX: Await the _parse method since it returns a coroutine
+            callback = await types.CallbackQuery._parse(bot_instance, callback_data, {})
             
             for group in sorted(bot_instance.dispatcher.groups.keys()):
                 for handler in bot_instance.dispatcher.groups[group]:
@@ -123,8 +138,14 @@ async def process_telegram_update(update: dict):
                             if handler.filters:
                                 if asyncio.iscoroutinefunction(handler.filters):
                                     filter_result = await handler.filters(bot_instance, callback)
+                                elif callable(handler.filters):
+                                    filter_check = handler.filters(bot_instance, callback)
+                                    if asyncio.iscoroutine(filter_check):
+                                        filter_result = await filter_check
+                                    else:
+                                        filter_result = filter_check
                                 else:
-                                    filter_result = await handler.filters(bot_instance, callback) if callable(handler.filters) else True
+                                    filter_result = True
                                 
                                 if not filter_result:
                                     continue
