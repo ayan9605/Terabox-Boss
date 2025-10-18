@@ -47,6 +47,11 @@ async def health():
         "bot_active": bot_instance is not None
     }
 
+@app.head("/")
+async def head_root():
+    """Handle HEAD requests for health checks"""
+    return {"status": "ok"}
+
 # =============================
 # Webhook Endpoint
 # =============================
@@ -157,15 +162,25 @@ async def process_update(update: dict):
 # =============================
 class MN_Bot(Client):
     def __init__(self):
+        # ✅ CRITICAL FIX: Remove existing session before init
+        session_file = "/tmp/MN-Bot.session"
+        if os.path.exists(session_file):
+            try:
+                os.remove(session_file)
+                logger.info("🗑️ Removed old session")
+            except:
+                pass
+        
         super().__init__(
             name="MN-Bot",
             api_id=API.ID,
             api_hash=API.HASH,
-            bot_token=BOT.TOKEN,
+            bot_token=BOT.TOKEN,  # ✅ This should work for bots
             plugins=dict(root="plugins"),
             workers=16,
             workdir="/tmp",
-            no_updates=True
+            no_updates=True,
+            in_memory=False  # ✅ Use file storage, not in-memory
         )
 
     async def start(self):
@@ -197,7 +212,7 @@ class MN_Bot(Client):
     async def stop(self, *args):
         """Stop bot"""
         await super().stop()
-        logger.info("🚫 Bot Stopped")
+        logger.info("🛑 Bot Stopped")
 
 # =============================
 # Webhook Setup
@@ -266,17 +281,8 @@ async def startup_event():
         
         logger.info(f"Webhook URL: {WEBHOOK_URL}")
         
-        # ✅ CRITICAL FIX: Ensure /tmp exists and clean old sessions
+        # Ensure /tmp exists
         os.makedirs("/tmp", exist_ok=True)
-        
-        # ✅ Remove old/corrupted session file
-        session_path = "/tmp/MN-Bot.session"
-        if os.path.exists(session_path):
-            try:
-                os.remove(session_path)
-                logger.info("🗑️ Removed old session file")
-            except Exception as e:
-                logger.warning(f"Could not remove old session: {e}")
         
         logger.info("Initializing bot...")
         bot_instance = MN_Bot()
