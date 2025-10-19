@@ -1,9 +1,12 @@
+#please give credits https://github.com/MN-BOTS
+#  @MrMNTG @MusammilN
 import os
 import tempfile
-import aiohttp  # ✅ Changed from requests
+import aiohttp
 import asyncio
 import time
 import mimetypes
+import json  # ✅ Added for manual JSON parsing
 from pyrogram import Client 
 from pyrogram import filters
 from pyrogram.types import Message
@@ -30,7 +33,7 @@ last_upload_col = db["terabox_lastupload"]
 TERABOX_REGEX = r'https?://(?:www\.)?[^/\s]*tera[^/\s]*\.[a-z]+/s/[^\s]+'
 API_BASE_URL = "https://terabox-fastapi.lily445545.workers.dev"
 
-# ✅ Reusable aiohttp session (connection pooling)
+# ✅ Reusable aiohttp session
 session = None
 
 async def get_session():
@@ -44,17 +47,29 @@ async def get_session():
 
 
 async def get_file_info_from_api(share_url: str) -> dict:
-    """Fetch file information using async aiohttp"""
+    """
+    ✅ FIXED: Fetch file information using async aiohttp
+    Handles text/plain content-type from API
+    """
     try:
         sess = await get_session()
         api_url = f"{API_BASE_URL}/api?url={share_url}"
         
         async with sess.get(api_url) as response:
             response.raise_for_status()
-            data = await response.json()
+            
+            # ✅ FIX: Read as text first, then parse JSON manually
+            # This bypasses aiohttp's strict content-type validation
+            text_response = await response.text()
+            
+            try:
+                data = json.loads(text_response)
+            except json.JSONDecodeError as je:
+                raise ValueError(f"Invalid JSON response: {text_response[:200]}")
             
             if not data.get("ok"):
-                raise ValueError("API returned error response")
+                error_msg = data.get("error", "Unknown error")
+                raise ValueError(f"API error: {error_msg}")
                 
             if not data.get("files") or len(data["files"]) == 0:
                 raise ValueError("No files found in the response")
@@ -68,11 +83,11 @@ async def get_file_info_from_api(share_url: str) -> dict:
                 "size_bytes": file_info.get("bytes", 0),
                 "thumb": file_info.get("thumb", ""),
                 "stream_link": file_info.get("stream", ""),
-                "file_type": detect_file_type(file_info.get("name", ""))  # ✅ Detect once
+                "file_type": detect_file_type(file_info.get("name", ""))
             }
             
     except aiohttp.ClientError as e:
-        raise ValueError(f"API request failed: {str(e)}")
+        raise ValueError(f"Network error: {str(e)}")
     except (KeyError, IndexError) as e:
         raise ValueError(f"Invalid API response format: {str(e)}")
 
@@ -153,7 +168,6 @@ def calculate_speed(downloaded: int, elapsed_time: float) -> str:
 async def download_file_async(url: str, temp_path: str, info: dict, status_msg):
     """
     ✅ Async download using aiohttp with optimized buffering
-    Much faster than requests library
     """
     start_time = time.time()
     last_update = start_time
@@ -263,7 +277,7 @@ async def handle_terabox(client, message: Message):
     status_msg = await message.reply("🔍 Fetching file info...")
     
     try:
-        info = await get_file_info_from_api(url)  # ✅ Now async
+        info = await get_file_info_from_api(url)
     except Exception as e:
         await status_msg.edit(f"❌ Failed to get file info:\n`{e}`")
         return
@@ -273,7 +287,7 @@ async def handle_terabox(client, message: Message):
         return
 
     temp_path = os.path.join(tempfile.gettempdir(), info["name"])
-    file_type = info["file_type"]  # ✅ Already detected
+    file_type = info["file_type"]
 
     try:
         # ✅ Async download
@@ -326,7 +340,7 @@ async def handle_terabox(client, message: Message):
             except Exception:
                 pass
 
-        # ✅ Upload to channel first
+        # Upload to channel first
         channel_msg = None
         if CHANNEL.ID:
             try:
@@ -359,7 +373,7 @@ async def handle_terabox(client, message: Message):
             except Exception as e:
                 print(f"Channel upload failed: {e}")
 
-        # ✅ Send to user using file_id (instant!)
+        # Send to user using file_id
         if channel_msg:
             try:
                 if file_type == 'video':
@@ -388,10 +402,10 @@ async def handle_terabox(client, message: Message):
                         protect_content=True
                     )
             except Exception as e:
-                print(f"File_id sharing failed, uploading: {e}")
+                print(f"File_id sharing failed: {e}")
                 channel_msg = None
 
-        # Fallback if no channel or file_id failed
+        # Fallback
         if not channel_msg:
             if file_type == 'video':
                 sent_msg = await client.send_video(
@@ -428,7 +442,6 @@ async def handle_terabox(client, message: Message):
             "⏰ Will be auto-deleted in 12 hours."
         )
         
-        # Auto-delete after 12 hours
         await asyncio.sleep(43200)
         try:
             await sent_msg.delete()
@@ -446,7 +459,7 @@ async def handle_terabox(client, message: Message):
                 pass
 
 
-# ✅ Cleanup session on shutdown
+# ✅ Cleanup on shutdown
 async def cleanup():
     global session
     if session and not session.closed:
