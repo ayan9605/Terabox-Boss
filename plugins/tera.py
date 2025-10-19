@@ -6,7 +6,7 @@ import aiohttp
 import asyncio
 import time
 import mimetypes
-import json  # ✅ Added for manual JSON parsing
+import json
 from pyrogram import Client 
 from pyrogram import filters
 from pyrogram.types import Message
@@ -49,7 +49,7 @@ async def get_session():
 async def get_file_info_from_api(share_url: str) -> dict:
     """
     ✅ FIXED: Fetch file information using async aiohttp
-    Handles text/plain content-type from API
+    Handles text/plain content-type and proper type conversions
     """
     try:
         sess = await get_session()
@@ -76,11 +76,24 @@ async def get_file_info_from_api(share_url: str) -> dict:
             
             file_info = data["files"][0]
             
+            # ✅ FIX: Convert size_bytes to integer safely
+            size_bytes_raw = file_info.get("bytes", 0)
+            try:
+                if isinstance(size_bytes_raw, str):
+                    # Remove any non-numeric characters and convert
+                    size_bytes = int(''.join(filter(str.isdigit, size_bytes_raw)) or '0')
+                elif isinstance(size_bytes_raw, (int, float)):
+                    size_bytes = int(size_bytes_raw)
+                else:
+                    size_bytes = 0
+            except (ValueError, TypeError):
+                size_bytes = 0
+            
             return {
                 "name": file_info.get("name", "download"),
                 "download_link": file_info.get("fast_download", ""),
                 "size_str": file_info.get("size", "Unknown"),
-                "size_bytes": file_info.get("bytes", 0),
+                "size_bytes": size_bytes,  # ✅ Now guaranteed to be int
                 "thumb": file_info.get("thumb", ""),
                 "stream_link": file_info.get("stream", ""),
                 "file_type": detect_file_type(file_info.get("name", ""))
@@ -94,6 +107,11 @@ async def get_file_info_from_api(share_url: str) -> dict:
 
 def get_size(bytes_len: int) -> str:
     """Convert bytes to human-readable format"""
+    try:
+        bytes_len = int(bytes_len)
+    except (ValueError, TypeError):
+        bytes_len = 0
+        
     if bytes_len >= 1024 ** 3:
         return f"{bytes_len / 1024**3:.2f} GB"
     if bytes_len >= 1024 ** 2:
@@ -105,6 +123,9 @@ def get_size(bytes_len: int) -> str:
 
 def detect_file_type(filename: str) -> str:
     """Detect file type based on extension"""
+    if not filename:
+        return 'document'
+        
     mime_type, _ = mimetypes.guess_type(filename)
     
     if mime_type:
@@ -128,6 +149,11 @@ def detect_file_type(filename: str) -> str:
 
 def progress_bar(percentage: float) -> str:
     """Generate a visual progress bar"""
+    try:
+        percentage = float(percentage)
+    except (ValueError, TypeError):
+        percentage = 0.0
+        
     filled_blocks = int(percentage / 5)
     empty_blocks = 20 - filled_blocks
     bar = "█" * filled_blocks + "░" * empty_blocks
@@ -136,6 +162,11 @@ def progress_bar(percentage: float) -> str:
 
 def format_time(seconds: int) -> str:
     """Format seconds into readable time string"""
+    try:
+        seconds = int(seconds)
+    except (ValueError, TypeError):
+        seconds = 0
+        
     if seconds < 60:
         return f"{seconds}s"
     elif seconds < 3600:
@@ -150,6 +181,12 @@ def format_time(seconds: int) -> str:
 
 def calculate_speed(downloaded: int, elapsed_time: float) -> str:
     """Calculate download speed"""
+    try:
+        downloaded = int(downloaded)
+        elapsed_time = float(elapsed_time)
+    except (ValueError, TypeError):
+        return "0 B/s"
+        
     if elapsed_time == 0:
         return "0 B/s"
     
@@ -173,8 +210,14 @@ async def download_file_async(url: str, temp_path: str, info: dict, status_msg):
     last_update = start_time
     downloaded = 0
     
-    # ✅ Use in-memory buffer for files < 100MB
-    use_memory = info["size_bytes"] < 100 * 1024 * 1024
+    # ✅ FIX: Safe type conversion before comparison
+    try:
+        size_bytes = int(info.get("size_bytes", 0))
+    except (ValueError, TypeError):
+        size_bytes = 0
+    
+    # Use in-memory buffer for files < 100MB
+    use_memory = size_bytes > 0 and size_bytes < 100 * 1024 * 1024
     
     if use_memory:
         file_obj = SpooledTemporaryFile(max_size=100*1024*1024, mode='w+b')
@@ -282,12 +325,12 @@ async def handle_terabox(client, message: Message):
         await status_msg.edit(f"❌ Failed to get file info:\n`{e}`")
         return
 
-    if not info["download_link"]:
+    if not info.get("download_link"):
         await status_msg.edit("❌ Could not retrieve download link")
         return
 
     temp_path = os.path.join(tempfile.gettempdir(), info["name"])
-    file_type = info["file_type"]
+    file_type = info.get("file_type", "document")
 
     try:
         # ✅ Async download
@@ -373,7 +416,7 @@ async def handle_terabox(client, message: Message):
             except Exception as e:
                 print(f"Channel upload failed: {e}")
 
-        # Send to user using file_id
+        # Send to user using file_id (instant!)
         if channel_msg:
             try:
                 if file_type == 'video':
@@ -405,7 +448,7 @@ async def handle_terabox(client, message: Message):
                 print(f"File_id sharing failed: {e}")
                 channel_msg = None
 
-        # Fallback
+        # Fallback to direct upload if channel upload failed
         if not channel_msg:
             if file_type == 'video':
                 sent_msg = await client.send_video(
@@ -442,6 +485,7 @@ async def handle_terabox(client, message: Message):
             "⏰ Will be auto-deleted in 12 hours."
         )
         
+        # Auto-delete after 12 hours
         await asyncio.sleep(43200)
         try:
             await sent_msg.delete()
@@ -452,6 +496,7 @@ async def handle_terabox(client, message: Message):
     except Exception as e:
         await status_msg.edit(f"❌ **Error:**\n`{str(e)}`")
     finally:
+        # Cleanup temp file
         if os.path.exists(temp_path):
             try:
                 os.remove(temp_path)
