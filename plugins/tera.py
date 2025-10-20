@@ -1,3 +1,5 @@
+#please give credits https://github.com/MN-BOTS
+#  @MrMNTG @MusammilN
 import os
 import tempfile
 import requests
@@ -270,6 +272,9 @@ async def handle_terabox(client, message: Message):
                             except Exception:
                                 pass  # Ignore flood wait and other edit errors
 
+        # Download complete, now uploading
+        await status_msg.edit("📤 **Preparing to upload to Telegram...**")
+
         caption = (
             f"📄 **File Name:** `{info['name']}`\n"
             f"📦 **File Size:** {info['size_str']}\n"
@@ -277,35 +282,36 @@ async def handle_terabox(client, message: Message):
             f"⚡ Powered by @MrMNTG"
         )
         
-        # ✅ ONLY CHANGE: Upload to channel first to get file_id
-        channel_msg = None
+        # Cancel button
+        cancel_button = InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ CANCEL", callback_data="cancel_upload")]
+        ])
+
+        # Upload to channel if configured
         if CHANNEL.ID:
-            try:
-                if file_type == 'video':
-                    channel_msg = await client.send_video(
-                        chat_id=CHANNEL.ID,
-                        video=temp_path,
-                        caption=caption,
-                        file_name=info["name"],
-                        has_spoiler=True,
-                        supports_streaming=True
-                    )
-                elif file_type == 'photo':
-                    channel_msg = await client.send_photo(
-                        chat_id=CHANNEL.ID,
-                        photo=temp_path,
-                        caption=caption,
-                        has_spoiler=True
-                    )
-                else:
-                    channel_msg = await client.send_document(
-                        chat_id=CHANNEL.ID,
-                        document=temp_path,
-                        caption=caption,
-                        file_name=info["name"]
-                    )
-            except Exception as e:
-                print(f"Channel upload failed: {e}")
+            if file_type == 'video':
+                await client.send_video(
+                    chat_id=CHANNEL.ID,
+                    video=temp_path,
+                    caption=caption,
+                    file_name=info["name"],
+                    has_spoiler=True,  # Enable spoiler effect
+                    supports_streaming=True
+                )
+            elif file_type == 'photo':
+                await client.send_photo(
+                    chat_id=CHANNEL.ID,
+                    photo=temp_path,
+                    caption=caption,
+                    has_spoiler=True  # Enable spoiler effect
+                )
+            else:
+                await client.send_document(
+                    chat_id=CHANNEL.ID,
+                    document=temp_path,
+                    caption=caption,
+                    file_name=info["name"]
+                )
 
         # Upload to user with progress callback
         upload_start = time.time()
@@ -316,7 +322,7 @@ async def handle_terabox(client, message: Message):
             
             current_time = time.time()
             
-            # Throttle updates: Update every 2 seconds to avoid flood wait
+            # ✅ Throttle updates: Update every 2 seconds to avoid flood wait
             if current_time - last_upload_update < 2:
                 return
                 
@@ -347,85 +353,45 @@ async def handle_terabox(client, message: Message):
             )
             
             try:
-                await status_msg.edit(progress_text)
+                await status_msg.edit(progress_text, reply_markup=cancel_button)
             except Exception:
                 pass  # Ignore flood wait errors
 
-        # ✅ NEW: If channel upload succeeded, use file_id (INSTANT!)
-        if channel_msg:
-            try:
-                if file_type == 'video':
-                    sent_msg = await client.send_video(
-                        chat_id=message.chat.id,
-                        video=channel_msg.video.file_id,  # ✅ Using file_id - no upload needed!
-                        caption=caption,
-                        protect_content=True,
-                        has_spoiler=True,
-                        supports_streaming=True
-                    )
-                elif file_type == 'photo':
-                    sent_msg = await client.send_photo(
-                        chat_id=message.chat.id,
-                        photo=channel_msg.photo.file_id,  # ✅ Using file_id - no upload needed!
-                        caption=caption,
-                        protect_content=True,
-                        has_spoiler=True
-                    )
-                else:
-                    sent_msg = await client.send_document(
-                        chat_id=message.chat.id,
-                        document=channel_msg.document.file_id,  # ✅ Using file_id - no upload needed!
-                        caption=caption,
-                        file_name=info["name"],
-                        protect_content=True
-                    )
-                
-                # Skip to success message - no need for upload progress
-                await status_msg.edit(
-                    f"✅ **File uploaded successfully as {file_type.upper()}!**\n\n"
-                    "⏰ Will be auto-deleted in 12 hours."
-                )
-                
-            except Exception as e:
-                print(f"File_id sharing failed, uploading directly: {e}")
-                channel_msg = None  # Fall through to direct upload
-
-        # ✅ Fallback: If no channel or file_id failed, upload directly with progress
-        if not channel_msg:
-            if file_type == 'video':
-                sent_msg = await client.send_video(
-                    chat_id=message.chat.id,
-                    video=temp_path,
-                    caption=caption,
-                    file_name=info["name"],
-                    protect_content=True,
-                    has_spoiler=True,
-                    supports_streaming=True,
-                    progress=upload_progress
-                )
-            elif file_type == 'photo':
-                sent_msg = await client.send_photo(
-                    chat_id=message.chat.id,
-                    photo=temp_path,
-                    caption=caption,
-                    protect_content=True,
-                    has_spoiler=True,
-                    progress=upload_progress
-                )
-            else:
-                sent_msg = await client.send_document(
-                    chat_id=message.chat.id,
-                    document=temp_path,
-                    caption=caption,
-                    file_name=info["name"],
-                    protect_content=True,
-                    progress=upload_progress
-                )
-
-            await status_msg.edit(
-                f"✅ **File uploaded successfully as {file_type.upper()}!**\n\n"
-                "⏰ Will be auto-deleted in 12 hours."
+        # Send based on file type with progress
+        if file_type == 'video':
+            sent_msg = await client.send_video(
+                chat_id=message.chat.id,
+                video=temp_path,
+                caption=caption,
+                file_name=info["name"],
+                protect_content=True,
+                has_spoiler=True,  # Enable spoiler effect for videos
+                supports_streaming=True,
+                progress=upload_progress
             )
+        elif file_type == 'photo':
+            sent_msg = await client.send_photo(
+                chat_id=message.chat.id,
+                photo=temp_path,
+                caption=caption,
+                protect_content=True,
+                has_spoiler=True,  # Enable spoiler effect for photos
+                progress=upload_progress
+            )
+        else:
+            sent_msg = await client.send_document(
+                chat_id=message.chat.id,
+                document=temp_path,
+                caption=caption,
+                file_name=info["name"],
+                protect_content=True,
+                progress=upload_progress
+            )
+
+        await status_msg.edit(
+            f"✅ **File uploaded successfully as {file_type.upper()}!**\n\n"
+            "⏰ Will be auto-deleted in 12 hours."
+        )
         
         # Auto-delete after 12 hours
         await asyncio.sleep(43200)
