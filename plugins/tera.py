@@ -31,13 +31,13 @@ API_BASE_URL = "https://terabox-fastapi.lily445545.workers.dev"
 
 def get_file_info_from_api(share_url: str) -> dict:
     """
-    Fetch file information from TeraBox FastAPI
+    Fetch file information from TeraBox FastAPI (new API format)
     
     Args:
         share_url: TeraBox share URL
         
     Returns:
-        dict with file information including download link
+        dict with file information including proxy download link
         
     Raises:
         ValueError: If API request fails or returns error
@@ -46,30 +46,38 @@ def get_file_info_from_api(share_url: str) -> dict:
         api_url = f"{API_BASE_URL}/api?url={share_url}"
         response = requests.get(api_url, timeout=30)
         response.raise_for_status()
-        
+
         data = response.json()
-        
-        if not data.get("ok"):
-            raise ValueError("API returned error response")
-            
-        if not data.get("files") or len(data["files"]) == 0:
-            raise ValueError("No files found in the response")
-        
-        file_info = data["files"][0]
-        
-        return {
-            "name": file_info.get("name", "download"),
-            "download_link": file_info.get("fast_download", ""),
-            "size_str": file_info.get("size", "Unknown"),
-            "size_bytes": file_info.get("bytes", 0),
-            "thumb": file_info.get("thumb", ""),
-            "stream_link": file_info.get("stream", "")
-        }
-        
+
+        # ✅ Handle new flat JSON response
+        if "proxy_url" in data:
+            return {
+                "name": data.get("file_name", "download"),
+                "download_link": data.get("proxy_url", ""),
+                "size_str": data.get("file_size", "Unknown"),
+                "size_bytes": data.get("size_bytes", 0),
+                "thumb": data.get("thumbnail", ""),
+                "stream_link": data.get("proxy_url", "")
+            }
+
+        # ⚠️ Fallback to old format (if API returns older structure)
+        if data.get("ok") and "files" in data and len(data["files"]) > 0:
+            file_info = data["files"][0]
+            return {
+                "name": file_info.get("name", "download"),
+                "download_link": file_info.get("fast_download", ""),
+                "size_str": file_info.get("size", "Unknown"),
+                "size_bytes": file_info.get("bytes", 0),
+                "thumb": file_info.get("thumb", ""),
+                "stream_link": file_info.get("stream", "")
+            }
+
+        raise ValueError("Invalid API response or missing proxy_url")
+
     except requests.RequestException as e:
         raise ValueError(f"API request failed: {str(e)}")
-    except (KeyError, IndexError) as e:
-        raise ValueError(f"Invalid API response format: {str(e)}")
+    except Exception as e:
+        raise ValueError(f"Error parsing API response: {str(e)}")
 
 
 def get_size(bytes_len: int) -> str:
