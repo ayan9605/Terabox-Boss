@@ -27,7 +27,7 @@ last_upload_col = db["terabox_lastupload"]
 TERABOX_REGEX = r'https?://(?:www\.)?[^/\s]*tera[^/\s]*\.[a-z]+/s/[^\s]+'
 
 # API Configuration
-API_BASE_URL = "https://terabox-powerful-api.onrender.com"
+API_BASE_URL = "https://terabox-api-mu-pearl.vercel.app"
 
 def get_file_info_from_api(share_url: str) -> dict:
     """
