@@ -2,7 +2,7 @@ import logging
 import asyncio
 import uvicorn
 import os
-from fastapi import FastAPI, Request, HTTPException, Header
+from fastapi import FastAPI, Request, HTTPException
 from pyrogram import Client
 from pyrogram.errors import FloodWait
 from config import BOT, API, OWNER
@@ -100,7 +100,6 @@ async def process_telegram_update(update: dict):
                     last_name=chat_data.get("last_name"),
                 )
             
-            # ✅ CRITICAL FIX: Await the _parse method
             message = await types.Message._parse(
                 client=bot_instance,
                 message=message_dict,
@@ -113,7 +112,7 @@ async def process_telegram_update(update: dict):
                 for handler in bot_instance.dispatcher.groups[group]:
                     if isinstance(handler, MessageHandler):
                         try:
-                            # Check filters - they can be async coroutines
+                            # Check filters
                             if handler.filters:
                                 if asyncio.iscoroutinefunction(handler.filters):
                                     filter_result = await handler.filters(bot_instance, message)
@@ -129,7 +128,6 @@ async def process_telegram_update(update: dict):
                                 if not filter_result:
                                     continue
                             
-                            # Call the handler callback
                             await handler.callback(bot_instance, message)
                             
                         except Exception as e:
@@ -139,7 +137,6 @@ async def process_telegram_update(update: dict):
         elif "edited_message" in update:
             message_dict = update["edited_message"]
             
-            # Build users dict
             users = {}
             if message_dict.get("from"):
                 from_user = message_dict["from"]
@@ -161,7 +158,6 @@ async def process_telegram_update(update: dict):
                     language_code=from_user.get("language_code"),
                 )
             
-            # Build chats dict
             chats = {}
             if message_dict.get("chat"):
                 chat_data = message_dict["chat"]
@@ -174,7 +170,6 @@ async def process_telegram_update(update: dict):
                     last_name=chat_data.get("last_name"),
                 )
             
-            # ✅ CRITICAL FIX: Await the _parse method
             message = await types.Message._parse(
                 client=bot_instance,
                 message=message_dict,
@@ -210,7 +205,6 @@ async def process_telegram_update(update: dict):
         elif "callback_query" in update:
             callback_dict = update["callback_query"]
             
-            # Build users dict
             users = {}
             if callback_dict.get("from"):
                 from_user = callback_dict["from"]
@@ -232,7 +226,6 @@ async def process_telegram_update(update: dict):
                     language_code=from_user.get("language_code"),
                 )
             
-            # ✅ CRITICAL FIX: Await the _parse method
             callback = await types.CallbackQuery._parse(
                 client=bot_instance,
                 callback_query=callback_dict,
@@ -276,7 +269,7 @@ class MN_Bot(Client):
             api_id=API.ID,
             api_hash=API.HASH,
             bot_token=BOT.TOKEN,
-            plugins=dict(root="plugins"),  # Auto-load all handlers
+            plugins=dict(root="plugins"),
             workers=16,
         )
 
@@ -315,7 +308,6 @@ async def setup_webhook(bot: MN_Bot, webhook_url: str):
     webhook_url should be: https://your-domain.com/webhook/{BOT.TOKEN}
     """
     try:
-        # Use Telegram Bot API to set webhook
         import httpx
         async with httpx.AsyncClient() as client:
             response = await client.post(
@@ -323,7 +315,7 @@ async def setup_webhook(bot: MN_Bot, webhook_url: str):
                 json={
                     "url": webhook_url,
                     "allowed_updates": ["message", "edited_message", "callback_query"],
-                    "drop_pending_updates": True  # Clear any pending updates
+                    "drop_pending_updates": True
                 }
             )
             result = response.json()
@@ -336,6 +328,27 @@ async def setup_webhook(bot: MN_Bot, webhook_url: str):
         logging.error(f"Error setting webhook: {e}")
 
 
+async def delete_webhook(bot: MN_Bot):
+    """
+    Deletes Telegram webhook (required before switching to polling)
+    """
+    try:
+        import httpx
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"https://api.telegram.org/bot{BOT.TOKEN}/deleteWebhook",
+                json={"drop_pending_updates": True}
+            )
+            result = response.json()
+            if result.get("ok"):
+                logging.info("✅ Webhook deleted successfully")
+            else:
+                logging.error(f"❌ Failed to delete webhook: {result}")
+                
+    except Exception as e:
+        logging.error(f"Error deleting webhook: {e}")
+
+
 # =============================
 # Main Runner
 # =============================
@@ -345,37 +358,62 @@ async def main():
     # Get webhook URL from environment variable
     WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # e.g., https://your-app.render.com/webhook/{BOT.TOKEN}
     
-    if not WEBHOOK_URL:
-        logging.error("❌ WEBHOOK_URL environment variable not set!")
-        logging.info("Please set WEBHOOK_URL=https://your-domain.com/webhook/{BOT.TOKEN}")
-        return
-
     bot_instance = MN_Bot()
     
-    # Start bot (connects to Telegram but doesn't start polling)
+    # Start bot (connects to Telegram)
     await bot_instance.start()
+
+    # =============================
+    # MODE SELECTION: Webhook vs Polling
+    # =============================
+    if WEBHOOK_URL:
+        # =============================
+        # WEBHOOK MODE
+        # =============================
+        logging.info("🌐 Running in WEBHOOK mode")
+        
+        # Setup webhook
+        await setup_webhook(bot_instance, WEBHOOK_URL)
+
+        # FastAPI server config
+        config = uvicorn.Config(
+            app,
+            host="0.0.0.0",
+            port=int(os.getenv("PORT", 8000)),
+            loop="asyncio",
+            log_level="info"
+        )
+        server = uvicorn.Server(config)
+
+        # Run FastAPI server
+        try:
+            logging.info("🚀 BOT and FastAPI webhook server are now running...")
+            await server.serve()
+        except (KeyboardInterrupt, SystemExit):
+            logging.info("⚠ Shutdown signal received...")
+        finally:
+            await bot_instance.stop()
     
-    # Setup webhook
-    await setup_webhook(bot_instance, WEBHOOK_URL)
-
-    # FastAPI server config
-    config = uvicorn.Config(
-        app,
-        host="0.0.0.0",
-        port=int(os.getenv("PORT", 8000)),
-        loop="asyncio",
-        log_level="info"
-    )
-    server = uvicorn.Server(config)
-
-    # Run FastAPI server
-    try:
-        logging.info("🚀 BOT and FastAPI webhook server are now running...")
-        await server.serve()
-    except (KeyboardInterrupt, SystemExit):
-        logging.info("⚠ Shutdown signal received...")
-    finally:
-        await bot_instance.stop()
+    else:
+        # =============================
+        # POLLING MODE
+        # =============================
+        logging.info("📡 Running in POLLING mode")
+        
+        # Delete webhook if exists (required before polling)
+        await delete_webhook(bot_instance)
+        
+        # Import pyrogram's idle function
+        from pyrogram import idle
+        
+        try:
+            logging.info("🚀 BOT is now running in polling mode...")
+            # Keep the bot alive and let Pyrogram handle updates
+            await idle()
+        except (KeyboardInterrupt, SystemExit):
+            logging.info("⚠ Shutdown signal received...")
+        finally:
+            await bot_instance.stop()
 
 
 # =============================
