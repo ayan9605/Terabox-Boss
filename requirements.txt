@@ -13,6 +13,7 @@ motor==2.5.1
 
 # Web scraping & HTTP
 aiohttp
+aiofiles
 requests
 cloudscraper
 beautifulsoup4
