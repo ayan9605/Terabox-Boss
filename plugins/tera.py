@@ -2,10 +2,11 @@
 #  @MrMNTG @MusammilN
 import os
 import tempfile
-import requests
 import asyncio
 import time
 import mimetypes
+import aiohttp
+import aiofiles
 from pyrogram import Client 
 from pyrogram import filters
 from pyrogram.types import Message
@@ -29,48 +30,39 @@ TERABOX_REGEX = r'https?://(?:www\.)?[^/\s]*tera[^/\s]*\.[a-z]+/s/[^\s]+'
 # Updated API Configuration
 API_BASE_URL = "https://gold-newt-367030.hostingersite.com/tera.php"
 
-def get_file_info_from_api(share_url: str) -> dict:
+async def get_file_info_from_api(share_url: str) -> dict:
     """
-    Fetch file information from the new TeraBox API
-    
-    Args:
-        share_url: TeraBox share URL
-        
-    Returns:
-        dict with file information including proxy download link
-        
-    Raises:
-        ValueError: If API request fails or returns error
+    Fetch file information from the new TeraBox API asynchronously
     """
     try:
         api_url = f"{API_BASE_URL}?url={share_url}"
-        response = requests.get(api_url, timeout=30)
-        response.raise_for_status()
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.get(api_url, timeout=30) as response:
+                response.raise_for_status()
+                data = await response.json()
 
-        data = response.json()
+                # ✅ Handle new JSON response format
+                if data.get("success") and "data" in data and len(data["data"]) > 0:
+                    file_info = data["data"][0]
+                    return {
+                        "name": file_info.get("file_name", "download") + file_info.get("extension", ""),
+                        "download_link": file_info.get("download_url", ""),
+                        "size_str": file_info.get("file_size", "Unknown"),
+                        "size_bytes": file_info.get("file_size_bytes", 0),
+                        "thumb": file_info.get("thumbnail", ""),
+                        "stream_link": file_info.get("stream_final_url", "")
+                    }
 
-        # ✅ Handle new JSON response format
-        if data.get("success") and "data" in data and len(data["data"]) > 0:
-            file_info = data["data"][0]
-            return {
-                "name": file_info.get("file_name", "download") + file_info.get("extension", ""),
-                "download_link": file_info.get("download_url", ""),
-                "size_str": file_info.get("file_size", "Unknown"),
-                "size_bytes": file_info.get("file_size_bytes", 0),
-                "thumb": file_info.get("thumbnail", ""),
-                "stream_link": file_info.get("stream_final_url", "")
-            }
+                raise ValueError("Invalid API response or missing download_url")
 
-        raise ValueError("Invalid API response or missing download_url")
-
-    except requests.RequestException as e:
+    except aiohttp.ClientError as e:
         raise ValueError(f"API request failed: {str(e)}")
     except Exception as e:
         raise ValueError(f"Error parsing API response: {str(e)}")
 
 
 def get_size(bytes_len: int) -> str:
-    """Convert bytes to human-readable format"""
     if bytes_len >= 1024 ** 3:
         return f"{bytes_len / 1024**3:.2f} GB"
     if bytes_len >= 1024 ** 2:
@@ -81,29 +73,18 @@ def get_size(bytes_len: int) -> str:
 
 
 def detect_file_type(filename: str) -> str:
-    """
-    Detect file type based on extension
-    
-    Args:
-        filename: Name of the file
-        
-    Returns:
-        'video', 'photo', or 'document'
-    """
     mime_type, _ = mimetypes.guess_type(filename)
-    
+
     if mime_type:
         if mime_type.startswith('video/'):
             return 'video'
         elif mime_type.startswith('image/'):
             return 'photo'
-    
-    # Fallback to extension checking
+
     video_extensions = ['.mp4', '.mkv', '.avi', '.mov', '.flv', '.wmv', '.webm', '.m4v', '.3gp']
     image_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.tiff']
-    
     ext = os.path.splitext(filename.lower())[1]
-    
+
     if ext in video_extensions:
         return 'video'
     elif ext in image_extensions:
@@ -113,33 +94,13 @@ def detect_file_type(filename: str) -> str:
 
 
 def progress_bar(percentage: float) -> str:
-    """
-    Generate a visual progress bar
-    
-    Args:
-        percentage: Progress percentage (0-100)
-        
-    Returns:
-        String representing the progress bar
-    """
-    # Progress bar with 20 blocks
     filled_blocks = int(percentage / 5)
     empty_blocks = 20 - filled_blocks
-    
     bar = "█" * filled_blocks + "░" * empty_blocks
     return f"[{bar}]"
 
 
 def format_time(seconds: int) -> str:
-    """
-    Format seconds into readable time string
-    
-    Args:
-        seconds: Time in seconds
-        
-    Returns:
-        Formatted time string (e.g., "2h 30m 15s" or "45s")
-    """
     if seconds < 60:
         return f"{seconds}s"
     elif seconds < 3600:
@@ -153,21 +114,9 @@ def format_time(seconds: int) -> str:
 
 
 def calculate_speed(downloaded: int, elapsed_time: float) -> str:
-    """
-    Calculate download speed
-    
-    Args:
-        downloaded: Bytes downloaded
-        elapsed_time: Time elapsed in seconds
-        
-    Returns:
-        Formatted speed string
-    """
     if elapsed_time == 0:
         return "0 B/s"
-    
     speed = downloaded / elapsed_time
-    
     if speed >= 1024 ** 3:
         return f"{speed / 1024**3:.2f} GB/s"
     elif speed >= 1024 ** 2:
@@ -198,9 +147,9 @@ async def handle_terabox(client, message: Message):
 
     url = message.text.strip()
     status_msg = await message.reply("🔍 Fetching file info...")
-    
+
     try:
-        info = get_file_info_from_api(url)
+        info = await get_file_info_from_api(url)
     except Exception as e:
         await status_msg.edit(f"❌ Failed to get file info:\n`{e}`")
         return
@@ -210,66 +159,63 @@ async def handle_terabox(client, message: Message):
         return
 
     temp_path = os.path.join(tempfile.gettempdir(), info["name"])
-
-    # Detect file type
     file_type = detect_file_type(info["name"])
 
-    # Initialize progress tracking
     start_time = time.time()
     last_update_time = start_time
     downloaded = 0
 
     try:
-        # Download using the fast_download link from API
-        with requests.get(info["download_link"], stream=True, timeout=60) as r:
-            r.raise_for_status()
-            total_size = int(r.headers.get('content-length', 0))
-            
-            with open(temp_path, "wb") as f:
-                chunk_size = 1024 * 1024  # 1MB chunks
-                
-                for chunk in r.iter_content(chunk_size=chunk_size):
-                    if chunk:
-                        f.write(chunk)
-                        downloaded += len(chunk)
-                        
-                        current_time = time.time()
-                        elapsed = current_time - start_time
-                        
-                        # Update progress every 2 seconds or every 5MB
-                        if (current_time - last_update_time >= 2) or (downloaded % (5 * 1024 * 1024) < chunk_size):
-                            last_update_time = current_time
-                            
-                            percentage = (downloaded / total_size * 100) if total_size > 0 else 0
-                            speed = calculate_speed(downloaded, elapsed)
-                            
-                            # Calculate ETA
-                            if downloaded > 0 and elapsed > 0:
-                                remaining_bytes = total_size - downloaded
-                                bytes_per_second = downloaded / elapsed
-                                eta_seconds = int(remaining_bytes / bytes_per_second) if bytes_per_second > 0 else 0
-                                eta_str = format_time(eta_seconds)
-                            else:
-                                eta_str = "calculating..."
-                            
-                            progress_text = (
-                                f"📥 **DOWNLOADING**\n\n"
-                                f"**FILE NAME:** `{info['name'][:30]}{'...' if len(info['name']) > 30 else ''}`\n"
-                                f"**SIZE:** {get_size(total_size)}\n\n"
-                                f"**PROCESS:**\n"
-                                f"{progress_bar(percentage)}\n\n"
-                                f"**SPEED:** {speed}\n"
-                                f"**PROGRESS:** {percentage:.1f}%\n\n"
-                                f"**Downloaded:** {get_size(downloaded)}\n"
-                                f"**ETA:** {eta_str}"
-                            )
-                            
-                            try:
-                                await status_msg.edit(progress_text)
-                            except Exception:
-                                pass  # Ignore flood wait and other edit errors
+        # Download using aiohttp and aiofiles for MAXIMUM async speed
+        async with aiohttp.ClientSession() as session:
+            # None timeout is critical for large files
+            async with session.get(info["download_link"], timeout=aiohttp.ClientTimeout(total=None)) as r:
+                r.raise_for_status()
+                total_size = int(r.headers.get('content-length', 0))
 
-        # Download complete, now uploading
+                # Non-blocking file write
+                async with aiofiles.open(temp_path, "wb") as f:
+                    chunk_size = 4 * 1024 * 1024  # 4MB chunks for extremely fast I/O throughput
+
+                    async for chunk in r.content.iter_chunked(chunk_size):
+                        if chunk:
+                            await f.write(chunk)
+                            downloaded += len(chunk)
+
+                            current_time = time.time()
+                            elapsed = current_time - start_time
+
+                            # Update progress strictly every 3 seconds to avoid FloodWait
+                            if current_time - last_update_time >= 3:
+                                last_update_time = current_time
+                                percentage = (downloaded / total_size * 100) if total_size > 0 else 0
+                                speed = calculate_speed(downloaded, elapsed)
+
+                                if downloaded > 0 and elapsed > 0:
+                                    remaining_bytes = total_size - downloaded
+                                    bytes_per_second = downloaded / elapsed
+                                    eta_seconds = int(remaining_bytes / bytes_per_second) if bytes_per_second > 0 else 0
+                                    eta_str = format_time(eta_seconds)
+                                else:
+                                    eta_str = "calculating..."
+
+                                progress_text = (
+                                    f"📥 **DOWNLOADING (Turbo)**\n\n"
+                                    f"**FILE NAME:** `{info['name'][:30]}{'...' if len(info['name']) > 30 else ''}`\n"
+                                    f"**SIZE:** {get_size(total_size)}\n\n"
+                                    f"**PROCESS:**\n"
+                                    f"{progress_bar(percentage)}\n\n"
+                                    f"**SPEED:** {speed}\n"
+                                    f"**PROGRESS:** {percentage:.1f}%\n\n"
+                                    f"**Downloaded:** {get_size(downloaded)}\n"
+                                    f"**ETA:** {eta_str}"
+                                )
+
+                                try:
+                                    await status_msg.edit(progress_text)
+                                except Exception:
+                                    pass
+
         await status_msg.edit("📤 **Preparing to upload to Telegram...**")
 
         caption = (
@@ -278,13 +224,11 @@ async def handle_terabox(client, message: Message):
             f"🔗 **Source:** [TeraBox Link]({url})\n\n"
             f"⚡ Powered by @MrMNTG"
         )
-        
-        # Cancel button
+
         cancel_button = InlineKeyboardMarkup([
             [InlineKeyboardButton("❌ CANCEL", callback_data="cancel_upload")]
         ])
 
-        # Upload to channel if configured
         if CHANNEL.ID:
             if file_type == 'video':
                 await client.send_video(
@@ -292,7 +236,7 @@ async def handle_terabox(client, message: Message):
                     video=temp_path,
                     caption=caption,
                     file_name=info["name"],
-                    has_spoiler=True,  # Enable spoiler effect
+                    has_spoiler=True,
                     supports_streaming=True
                 )
             elif file_type == 'photo':
@@ -300,7 +244,7 @@ async def handle_terabox(client, message: Message):
                     chat_id=CHANNEL.ID,
                     photo=temp_path,
                     caption=caption,
-                    has_spoiler=True  # Enable spoiler effect
+                    has_spoiler=True
                 )
             else:
                 await client.send_document(
@@ -310,25 +254,22 @@ async def handle_terabox(client, message: Message):
                     file_name=info["name"]
                 )
 
-        # Upload to user with progress callback
         upload_start = time.time()
         last_upload_update = upload_start
-        
+
         async def upload_progress(current, total):
             nonlocal last_upload_update
-            
             current_time = time.time()
-            
-            # ✅ Throttle updates: Update every 2 seconds to avoid flood wait
-            if current_time - last_upload_update < 2:
+
+            # Throttle to 3 seconds to avoid pyrogram FloodWait exceptions
+            if current_time - last_upload_update < 3:
                 return
-                
+
             last_upload_update = current_time
             elapsed = current_time - upload_start
             percentage = (current / total) * 100
             speed = calculate_speed(current, elapsed)
-            
-            # Calculate upload ETA
+
             if current > 0 and elapsed > 0:
                 remaining = total - current
                 rate = current / elapsed
@@ -336,9 +277,9 @@ async def handle_terabox(client, message: Message):
                 eta_str = format_time(eta)
             else:
                 eta_str = "calculating..."
-            
+
             progress_text = (
-                f"📤 **UPLOADING**\n\n"
+                f"📤 **UPLOADING (Turbo)**\n\n"
                 f"**FILE NAME:** `{info['name'][:30]}{'...' if len(info['name']) > 30 else ''}`\n"
                 f"**SIZE:** {get_size(total)}\n\n"
                 f"**PROCESS:**\n"
@@ -348,13 +289,12 @@ async def handle_terabox(client, message: Message):
                 f"**Uploaded:** {get_size(current)}\n"
                 f"**ETA:** {eta_str}"
             )
-            
+
             try:
                 await status_msg.edit(progress_text, reply_markup=cancel_button)
             except Exception:
-                pass  # Ignore flood wait errors
+                pass 
 
-        # Send based on file type with progress
         if file_type == 'video':
             sent_msg = await client.send_video(
                 chat_id=message.chat.id,
@@ -362,7 +302,7 @@ async def handle_terabox(client, message: Message):
                 caption=caption,
                 file_name=info["name"],
                 protect_content=True,
-                has_spoiler=True,  # Enable spoiler effect for videos
+                has_spoiler=True,
                 supports_streaming=True,
                 progress=upload_progress
             )
@@ -372,7 +312,7 @@ async def handle_terabox(client, message: Message):
                 photo=temp_path,
                 caption=caption,
                 protect_content=True,
-                has_spoiler=True,  # Enable spoiler effect for photos
+                has_spoiler=True,
                 progress=upload_progress
             )
         else:
@@ -389,8 +329,7 @@ async def handle_terabox(client, message: Message):
             f"✅ **File uploaded successfully as {file_type.upper()}!**\n\n"
             "⏰ Will be auto-deleted in 12 hours."
         )
-        
-        # Auto-delete after 12 hours
+
         await asyncio.sleep(43200)
         try:
             await sent_msg.delete()
@@ -398,12 +337,11 @@ async def handle_terabox(client, message: Message):
         except Exception:
             pass
 
-    except requests.RequestException as e:
+    except aiohttp.ClientError as e:
         await status_msg.edit(f"❌ **Download failed:**\n`{str(e)}`")
     except Exception as e:
         await status_msg.edit(f"❌ **Upload failed:**\n`{str(e)}`")
     finally:
-        # Cleanup temp file
         if os.path.exists(temp_path):
             try:
                 os.remove(temp_path)
