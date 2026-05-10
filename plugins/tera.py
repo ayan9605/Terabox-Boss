@@ -26,12 +26,12 @@ last_upload_col = db["terabox_lastupload"]
 
 TERABOX_REGEX = r'https?://(?:www\.)?[^/\s]*tera[^/\s]*\.[a-z]+/s/[^\s]+'
 
-# API Configuration
-API_BASE_URL = "https://terabox-fastapi.lily445545.workers.dev"
+# Updated API Configuration
+API_BASE_URL = "https://gold-newt-367030.hostingersite.com/tera.php"
 
 def get_file_info_from_api(share_url: str) -> dict:
     """
-    Fetch file information from TeraBox FastAPI (new API format)
+    Fetch file information from the new TeraBox API
     
     Args:
         share_url: TeraBox share URL
@@ -43,36 +43,25 @@ def get_file_info_from_api(share_url: str) -> dict:
         ValueError: If API request fails or returns error
     """
     try:
-        api_url = f"{API_BASE_URL}/api?url={share_url}"
+        api_url = f"{API_BASE_URL}?url={share_url}"
         response = requests.get(api_url, timeout=30)
         response.raise_for_status()
 
         data = response.json()
 
-        # ✅ Handle new flat JSON response
-        if "proxy_url" in data:
+        # ✅ Handle new JSON response format
+        if data.get("success") and "data" in data and len(data["data"]) > 0:
+            file_info = data["data"][0]
             return {
-                "name": data.get("file_name", "download"),
-                "download_link": data.get("proxy_url", ""),
-                "size_str": data.get("file_size", "Unknown"),
-                "size_bytes": data.get("size_bytes", 0),
-                "thumb": data.get("thumbnail", ""),
-                "stream_link": data.get("proxy_url", "")
+                "name": file_info.get("file_name", "download") + file_info.get("extension", ""),
+                "download_link": file_info.get("download_url", ""),
+                "size_str": file_info.get("file_size", "Unknown"),
+                "size_bytes": file_info.get("file_size_bytes", 0),
+                "thumb": file_info.get("thumbnail", ""),
+                "stream_link": file_info.get("stream_final_url", "")
             }
 
-        # ⚠️ Fallback to old format (if API returns older structure)
-        if data.get("ok") and "files" in data and len(data["files"]) > 0:
-            file_info = data["files"][0]
-            return {
-                "name": file_info.get("name", "download"),
-                "download_link": file_info.get("fast_download", ""),
-                "size_str": file_info.get("size", "Unknown"),
-                "size_bytes": file_info.get("bytes", 0),
-                "thumb": file_info.get("thumb", ""),
-                "stream_link": file_info.get("stream", "")
-            }
-
-        raise ValueError("Invalid API response or missing proxy_url")
+        raise ValueError("Invalid API response or missing download_url")
 
     except requests.RequestException as e:
         raise ValueError(f"API request failed: {str(e)}")
