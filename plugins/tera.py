@@ -15,8 +15,6 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pymongo import MongoClient
 import shutil
 from config import CHANNEL, DATABASE
-#please give credits https://github.com/MN-BOTS
-#  @MrMNTG @MusammilN
 
 mongo_client = MongoClient(DATABASE.URI)
 db = mongo_client[DATABASE.NAME]
@@ -27,8 +25,9 @@ last_upload_col = db["terabox_lastupload"]
 
 TERABOX_REGEX = r'https?://(?:www\.)?[^/\s]*tera[^/\s]*\.[a-z]+/s/[^\s]+'
 
-# Updated API Configuration
-API_BASE_URL = "https://gold-newt-367030.hostingersite.com/tera.php"
+# Updated xAPIverse Configuration
+API_BASE_URL = "https://xapiverse.com/api/terabox"
+API_KEY = "sk_2911b15d46cbf9d721909245abb07ca9"
 
 # 🎭 BROWSER SPOOFING HEADERS: Tricks the CDN into thinking the bot is Google Chrome
 BROWSER_HEADERS = {
@@ -45,30 +44,40 @@ BROWSER_HEADERS = {
 
 async def get_file_info_from_api(share_url: str) -> dict:
     """
-    Fetch file information from the new TeraBox API asynchronously
+    Fetch file information from the xAPIverse API and process its structural format
     """
     try:
-        api_url = f"{API_BASE_URL}?url={share_url}"
+        payload = {
+            "url": share_url
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "xAPIverse-Key": API_KEY
+        }
         
         async with aiohttp.ClientSession() as session:
-            # We use headers here as well just in case the API endpoint checks it
-            async with session.get(api_url, headers=BROWSER_HEADERS, timeout=30) as response:
+            async with session.post(API_BASE_URL, json=payload, headers=headers, timeout=30) as response:
                 response.raise_for_status()
                 data = await response.json()
 
-                # ✅ Handle new JSON response format
-                if data.get("success") and "data" in data and len(data["data"]) > 0:
-                    file_info = data["data"][0]
-                    return {
-                        "name": file_info.get("file_name", "download") + file_info.get("extension", ""),
-                        "download_link": file_info.get("download_url", ""),
-                        "size_str": file_info.get("file_size", "Unknown"),
-                        "size_bytes": file_info.get("file_size_bytes", 0),
-                        "thumb": file_info.get("thumbnail", ""),
-                        "stream_link": file_info.get("stream_final_url", "")
-                    }
+                # ✅ Targets the "list" array inside your new API response schema
+                if data.get("status") == "success" and "list" in data and len(data["list"]) > 0:
+                    file_info = data["list"][0]
+                    
+                    # Target 'normal_dlink' explicitly as requested
+                    download_link = file_info.get("normal_dlink", "")
 
-                raise ValueError("Invalid API response or missing download_url")
+                    if download_link:
+                        return {
+                            "name": file_info.get("name", "download"),
+                            "download_link": download_link,
+                            "size_str": file_info.get("size_formatted", "Unknown"),
+                            "size_bytes": file_info.get("size", 0),
+                            "thumb": file_info.get("thumbnail", ""),
+                            "stream_link": file_info.get("stream_url", "")
+                        }
+
+                raise ValueError("Invalid API response or missing normal_dlink")
 
     except aiohttp.ClientError as e:
         raise ValueError(f"API request failed: {str(e)}")
@@ -177,7 +186,7 @@ async def handle_terabox(client, message: Message):
 
     start_time = time.time()
     last_update_time = start_time
-    last_percentage = 0  # Track percentage for double-throttling
+    last_percentage = 0  
     downloaded = 0
 
     try:
@@ -190,7 +199,7 @@ async def handle_terabox(client, message: Message):
 
                 # Non-blocking file write
                 async with aiofiles.open(temp_path, "wb") as f:
-                    chunk_size = 8 * 1024 * 1024  # Increased to 8MB chunks for extremely fast I/O throughput
+                    chunk_size = 8 * 1024 * 1024  # 8MB chunks for fast high-throughput performance
 
                     async for chunk in r.content.iter_chunked(chunk_size):
                         if chunk:
