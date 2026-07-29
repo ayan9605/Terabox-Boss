@@ -26,7 +26,7 @@ last_upload_col = db["terabox_lastupload"]
 TERABOX_REGEX = r'https?://(?:www\.)?[^/\s]*tera[^/\s]*\.[a-z]+/s/[^\s]+'
 
 # Updated xAPIverse Configuration
-API_BASE_URL = "https://xapiverse.com/api/terabox-pro"
+API_BASE_URL = "https://xapiverse.com/api/terabox"
 API_KEY = "sk_f3be9c2f948678a13a1e5238c9f46019"
 
 # 🎭 BROWSER SPOOFING HEADERS: Tricks the CDN into thinking the bot is Google Chrome
@@ -64,8 +64,8 @@ async def get_file_info_from_api(share_url: str) -> dict:
                 if data.get("status") == "success" and "list" in data and len(data["list"]) > 0:
                     file_info = data["list"][0]
                     
-                    # Target 'fast_dlink' explicitly as requested
-                    download_link = file_info.get("fast_dlink", "")
+                    # Target 'normal_dlink' explicitly as requested
+                    download_link = file_info.get("normal_dlink", "")
 
                     if download_link:
                         return {
@@ -77,7 +77,7 @@ async def get_file_info_from_api(share_url: str) -> dict:
                             "stream_link": file_info.get("stream_url", "")
                         }
 
-                raise ValueError("Invalid API response or missing fast_dlink")
+                raise ValueError("Invalid API response or missing normal_dlink")
 
     except aiohttp.ClientError as e:
         raise ValueError(f"API request failed: {str(e)}")
